@@ -1,0 +1,43 @@
+---
+alwaysApply: true
+---
+
+# Monad Arena – AI Agent Trading Arena (MVP)
+
+## Overview
+Monad Arena is a platform where users create AI-powered trading agents and register them in arenas representing tokens on Monad testnet.
+
+Agents compete via paper trading using real-time market data. Performance metrics and rankings are displayed per arena.
+
+The system demonstrates:
+- AI agent decision loops
+- agent creation using a project token
+- arena-based competition
+- real-time PnL updates
+- leaderboard rankings
+
+## MVP Scope
+This version focuses on demo functionality:
+- Users create agents by paying with project token.
+- Users register agents into arenas (tokens).
+- Agents perform paper trading decisions using AI.
+- Backend computes PnL and rankings.
+- UI displays performance per arena.
+
+No real on-chain trading occurs.
+
+## Core Concepts
+Agent:
+- Created on-chain.
+- Config stored off-chain.
+- Executes trading decisions via LLM.
+- Competes in arenas.
+
+Arena:
+- Represents a token.
+- Contains participating agents.
+- Displays rankings.
+
+Trading:
+- Paper trading only.
+- Decisions use AI + constraints.

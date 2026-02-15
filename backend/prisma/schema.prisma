@@ -1,0 +1,230 @@
+// Monad Arena backend - Prisma schema (Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Agent {
+  id                  Int       @id @default(autoincrement())
+  ownerAddress        String
+  name                String
+  profileHash         String
+  profileJson         Json
+  onChainId           Int?      @unique
+  walletAddress       String?   // Legacy EOA wallet address
+  smartAccountAddress String?   // ERC-4337 SimpleAccount address
+  encryptedSignerKey  String?   // AES-256-GCM encrypted signer private key
+  creationTxHash      String?
+  fundedBalance       Float     @default(0) // Total MOLTI funded by owner (paper trading capital)
+  createdAt           DateTime  @default(now())
+
+  arenaRegistrations  ArenaRegistration[]
+  epochRegistrations  EpochRegistration[]
+  epochPointsSnapshots EpochPointsSnapshot[]
+  portfolios          Portfolio[]
+  trades              Trade[]
+  decisions           AgentDecision[]
+  memories            AgentMemory[]
+}
+
+model Arena {
+  id           Int       @id @default(autoincrement())
+  tokenAddress String    @unique
+  name         String?
+  onChainId    Int?      @unique
+  createdAt    DateTime  @default(now())
+
+  arenaRegistrations   ArenaRegistration[]
+  decisions            AgentDecision[]
+  epochs              Epoch[]
+  portfolios          Portfolio[]
+  trades              Trade[]
+  leaderboardSnapshots LeaderboardSnapshot[]
+  memories            AgentMemory[]
+}
+
+model Epoch {
+  id               Int       @id @default(autoincrement())
+  arenaId          Int
+  onChainEpochId   Int?      // contract epoch ID (per arena)
+  startAt          DateTime
+  endAt            DateTime
+  status           String    @default("active") // active | ended
+  rewardPoolAmount String?   // wei string
+  burnedAmount     String?   // wei string
+  createdAt        DateTime  @default(now())
+
+  arena             Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  epochRegistrations EpochRegistration[]
+  epochPointsSnapshots EpochPointsSnapshot[]
+  portfolios        Portfolio[]
+  trades            Trade[]
+  leaderboardSnapshots LeaderboardSnapshot[]
+
+  @@index([arenaId, status])
+}
+
+model EpochRegistration {
+  id              Int      @id @default(autoincrement())
+  epochId         Int
+  agentId         Int
+  depositAmount   String?  // wei string (0 in auto-renew model)
+  feesPaid        String?  // wei string
+  principalClaimed Boolean @default(false)
+  rewardClaimed   Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  epoch Epoch @relation(fields: [epochId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([epochId, agentId])
+}
+
+model EpochPointsSnapshot {
+  id           Int      @id @default(autoincrement())
+  epochId      Int
+  agentId      Int
+  points       Float
+  volumeTraded Float
+  pnlPct       Float
+  tradeCount   Int
+  rank         Int
+  createdAt    DateTime @default(now())
+
+  epoch Epoch @relation(fields: [epochId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([epochId, agentId])
+}
+
+model AgentDecision {
+  id             Int       @id @default(autoincrement())
+  agentId        Int
+  arenaId        Int
+  tick           Int
+  action         String    // BUY | SELL | HOLD
+  sizePct        Float
+  reason         String
+  confidence     Float?
+  price          Float
+  status         String    // success | failed | skipped_no_gas
+  onChainTxHash  String?
+  createdAt      DateTime  @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, createdAt])
+}
+
+model ArenaRegistration {
+  id                Int      @id @default(autoincrement())
+  agentId           Int
+  arenaId           Int
+  isActive          Boolean  @default(true)
+  deposit           String?  // MOLTI deposit amount (string for BigInt precision)
+  registrationTxHash String?
+  createdAt         DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, arenaId])
+}
+
+model Portfolio {
+  id               Int       @id @default(autoincrement())
+  agentId          Int
+  arenaId          Int
+  epochId          Int?
+  initialCapital   Float     @default(0) // Starting capital when agent joined the arena
+  cashMon          Float
+  tokenUnits       Float
+  avgEntryPrice    Float?
+  tradesThisWindow Int       @default(0)
+  lastTradeTick    Int?
+  updatedAt        DateTime  @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  epoch Epoch? @relation(fields: [epochId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, arenaId, epochId])
+  @@index([agentId, arenaId])
+}
+
+model Trade {
+  id             Int      @id @default(autoincrement())
+  agentId        Int
+  arenaId        Int
+  epochId        Int?
+  tick           Int
+  action         String
+  sizePct        Float
+  price          Float
+  tradeValueMon  Float?   // Trade notional for volume aggregation
+  cashAfter      Float
+  tokenAfter     Float
+  reason         String
+  onChainTxHash  String?  // Transaction hash from on-chain executeTrade via ERC-4337
+  createdAt      DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  epoch Epoch? @relation(fields: [epochId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, arenaId, epochId])
+}
+
+model LeaderboardSnapshot {
+  id           Int      @id @default(autoincrement())
+  arenaId      Int
+  epochId      Int?
+  tick         Int
+  rankingsJson Json
+  createdAt    DateTime @default(now())
+
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  epoch Epoch? @relation(fields: [epochId], references: [id], onDelete: SetNull)
+
+  @@index([arenaId, epochId])
+}
+
+model MarketEvent {
+  id            Int      @id @default(autoincrement())
+  tokenAddress  String
+  eventType     String   // "Buy", "Sell", "Swap", "Create", "Sync"
+  price         Float?
+  volumeMon     Float?
+  traderAddress String?
+  poolAddress   String?  // For DEX swaps
+  transactionHash String?
+  amountIn      String?  // Stored as string to preserve precision
+  amountOut     String?  // Stored as string to preserve precision
+  createdAt     DateTime @default(now())
+
+  @@index([tokenAddress, createdAt])
+  @@index([createdAt])
+}
+
+model AgentMemory {
+  id                    Int       @id @default(autoincrement())
+  agentId               Int
+  arenaId               Int
+  memoryText            String   // Summary of agent's past decisions and performance
+  tick                  Int       // Last tick when memory was updated
+  lastAiSummarizedAt    DateTime? // Last time AI summarization was performed
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, arenaId])
+  @@index([agentId, arenaId])
+}

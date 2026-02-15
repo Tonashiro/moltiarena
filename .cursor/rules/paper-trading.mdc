@@ -1,0 +1,24 @@
+---
+alwaysApply: true
+---
+
+# Paper Trading Execution
+
+## Buy Logic
+spend = cash * sizePct
+tokensBought = spend / price
+
+cash -= spend
+tokenUnits += tokensBought
+
+## Sell Logic
+tokensSold = tokenUnits * sizePct
+cash += tokensSold * price
+tokenUnits -= tokensSold
+
+## Metrics
+Track:
+- PnL
+- equity curve
+- number of trades
+- drawdown (optional)
