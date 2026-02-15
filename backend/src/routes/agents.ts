@@ -4,8 +4,15 @@ import { createAgentBodySchema, syncAgentBodySchema } from "../schemas/requests.
 import { AgentProfileConfigSchema } from "../schemas/agentProfile.js";
 import { hashProfileConfig } from "../utils/profileHash.js";
 import { handleRouteError, parseId } from "./routeHelpers.js";
-import { createAgentWallet, withdrawMolti, withdrawMon, approveMoltiForArena } from "../services/smartAccount.js";
-import { parseEther, type Address } from "viem";
+import {
+  createAgentWallet,
+  getMoltiBalance,
+  withdrawMolti,
+  withdrawMon,
+  approveMoltiForArena,
+} from "../services/smartAccount.js";
+import { getPendingRewardFromContract } from "../services/epochService.js";
+import { formatEther, parseEther, type Address } from "viem";
 
 const router = Router();
 
@@ -35,8 +42,17 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
       },
       orderBy: { id: "asc" },
     });
+    const walletAddresses = agents.map(
+      (a) => (a.smartAccountAddress ?? a.walletAddress) as Address | null
+    );
+    const balances = await Promise.all(
+      walletAddresses.map((addr) =>
+        addr ? getMoltiBalance(addr) : Promise.resolve(0n)
+      )
+    );
+
     res.json({
-      agents: agents.map((a) => ({
+      agents: agents.map((a, i) => ({
         id: a.id,
         name: a.name,
         ownerAddress: a.ownerAddress,
@@ -46,6 +62,7 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
         smartAccountAddress: a.smartAccountAddress,
         creationTxHash: a.creationTxHash,
         fundedBalance: a.fundedBalance,
+        moltiBalance: Number(formatEther(balances[i] ?? 0n)),
         createdAt: a.createdAt,
         registeredArenaIds: a.arenaRegistrations.map((r) => r.arenaId),
       })),
@@ -77,6 +94,15 @@ router.get("/:agentId", async (req: Request, res: Response): Promise<void> => {
       (s, r) => s + (r.deposit ? Number(r.deposit) / 1e18 : 0),
       0,
     );
+    const personaMemory = await prisma.agentPersonaMemory.findUnique({
+      where: { agentId },
+      select: {
+        memoryText: true,
+        lastUpdatedTick: true,
+        lastAiSummarizedAt: true,
+        updatedAt: true,
+      },
+    });
     const arenasWithPnl = await Promise.all(
       agent.arenaRegistrations.map(async (reg) => {
         // Prefer live Portfolio (source of truth) over stale LeaderboardSnapshot
@@ -139,18 +165,6 @@ router.get("/:agentId", async (req: Request, res: Response): Promise<void> => {
           if (entry) pointsVal = entry.points ?? null;
         }
 
-        // Get agent memory for this arena
-        const memory = await prisma.agentMemory.findUnique({
-          where: {
-            agentId_arenaId: { agentId, arenaId: reg.arenaId },
-          },
-          select: {
-            memoryText: true,
-            tick: true,
-            lastAiSummarizedAt: true,
-            updatedAt: true,
-          },
-        });
         return {
           arenaId: reg.arena.id,
           tokenAddress: reg.arena.tokenAddress,
@@ -161,12 +175,12 @@ router.get("/:agentId", async (req: Request, res: Response): Promise<void> => {
           tokenUnits: tokenUnitsVal,
           initialCapital: initialCapitalVal,
           points: pointsVal,
-          memory: memory
+          memory: personaMemory
             ? {
-                text: memory.memoryText,
-                tick: memory.tick,
-                lastAiSummarizedAt: memory.lastAiSummarizedAt,
-                updatedAt: memory.updatedAt,
+                text: personaMemory.memoryText,
+                tick: personaMemory.lastUpdatedTick,
+                lastAiSummarizedAt: personaMemory.lastAiSummarizedAt,
+                updatedAt: personaMemory.updatedAt,
               }
             : null,
         };
@@ -460,33 +474,72 @@ router.get("/:agentId/stats", async (req: Request, res: Response): Promise<void>
 
     const epochRegs = await prisma.epochRegistration.findMany({
       where: { agentId },
-      include: { epoch: { select: { arenaId: true, endAt: true, status: true } } },
+      include: {
+        epoch: {
+          select: {
+            arenaId: true,
+            endAt: true,
+            status: true,
+            onChainEpochId: true,
+            arena: { select: { onChainId: true, name: true } },
+          },
+        },
+      },
     });
     let feesPaid = 0;
-    let rewardsClaimed = 0;
-    const pendingRewards: Array<{ epochId: number; arenaId: number; amount: string; endAt: string }> = [];
+    let rewardsClaimedWei = BigInt(0);
+    const pendingRewards: Array<{
+      epochId: number;
+      arenaId: number;
+      arenaName: string | null;
+      onChainEpochId: number | null;
+      arenaOnChainId: number | null;
+      amount: string;
+      endAt: string;
+    }> = [];
     for (const reg of epochRegs) {
       const feesWei = reg.feesPaid ? parseFloat(reg.feesPaid) / 1e18 : 0;
-      feesPaid += feesWei; // Epoch renewal fees (100 MOLTI per epoch)
-      if (reg.rewardClaimed) {
-        // Rewards claimed - we'd need to track amount from contract or DB
-        rewardsClaimed += 0; // TODO: track claimed amounts
+      feesPaid += feesWei;
+      if (reg.rewardClaimed && reg.claimedRewardAmountWei) {
+        rewardsClaimedWei += BigInt(reg.claimedRewardAmountWei);
       }
       if (!reg.rewardClaimed && reg.epoch.status === "ended") {
-        pendingRewards.push({
-          epochId: reg.epochId,
-          arenaId: reg.epoch.arenaId,
-          amount: "0", // TODO: fetch from contract getPendingReward
-          endAt: reg.epoch.endAt.toISOString(),
-        });
+        let amount = reg.pendingRewardAmountWei ?? "0";
+        const agentOnChainId = agent.onChainId;
+        const arenaOnChainId = reg.epoch.arena?.onChainId ?? null;
+        const epochOnChainId = reg.epoch.onChainEpochId ?? null;
+        if (
+          agentOnChainId != null &&
+          arenaOnChainId != null &&
+          epochOnChainId != null
+        ) {
+          amount = await getPendingRewardFromContract(
+            agentOnChainId,
+            arenaOnChainId,
+            epochOnChainId
+          );
+        }
+        if (BigInt(amount) > BigInt(0)) {
+          pendingRewards.push({
+            epochId: reg.epochId,
+            arenaId: reg.epoch.arenaId,
+            arenaName: reg.epoch.arena?.name ?? null,
+            onChainEpochId: epochOnChainId,
+            arenaOnChainId,
+            amount,
+            endAt: reg.epoch.endAt.toISOString(),
+          });
+        }
       }
     }
+
+    const rewardsCollected = Number(rewardsClaimedWei) / 1e18;
 
     res.json({
       agentId,
       tradeCount,
-      feesPaid: feesPaid + tradeFeesMolti, // Epoch renewal + trade fees (0.5%)
-      rewardsCollected: rewardsClaimed,
+      feesPaid: feesPaid + tradeFeesMolti,
+      rewardsCollected,
       pendingRewards,
     });
   } catch (e) {
@@ -615,7 +668,7 @@ router.get("/:agentId/decisions", async (req: Request, res: Response): Promise<v
 
 /**
  * GET /agents/:agentId/memory
- * Returns agent memory summaries per arena.
+ * Returns the agent's persona memory (one evolving summary across all arenas).
  */
 router.get("/:agentId/memory", async (req: Request, res: Response): Promise<void> => {
   try {
@@ -630,22 +683,20 @@ router.get("/:agentId/memory", async (req: Request, res: Response): Promise<void
       return;
     }
 
-    const memories = await prisma.agentMemory.findMany({
+    const persona = await prisma.agentPersonaMemory.findUnique({
       where: { agentId },
-      include: { arena: { select: { id: true, name: true } } },
-      orderBy: { updatedAt: "desc" },
     });
 
     res.json({
       agentId,
-      memories: memories.map((m) => ({
-        arenaId: m.arenaId,
-        arenaName: m.arena.name,
-        memoryText: m.memoryText,
-        tick: m.tick,
-        lastAiSummarizedAt: m.lastAiSummarizedAt,
-        updatedAt: m.updatedAt,
-      })),
+      memory: persona
+        ? {
+            memoryText: persona.memoryText,
+            lastUpdatedTick: persona.lastUpdatedTick,
+            lastAiSummarizedAt: persona.lastAiSummarizedAt,
+            updatedAt: persona.updatedAt,
+          }
+        : null,
     });
   } catch (e) {
     handleRouteError(e, res, "GET /agents/:agentId/memory");

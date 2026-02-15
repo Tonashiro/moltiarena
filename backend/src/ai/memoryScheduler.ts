@@ -10,9 +10,8 @@ export interface MemorySchedulerDeps {
 }
 
 /**
- * Scheduler that periodically runs AI-powered memory summarization for all agents.
- * Runs every summarizationIntervalHours and only processes agents that haven't been
- * summarized recently or have accumulated enough new trades.
+ * Scheduler that periodically runs AI-powered persona summarization for all agents.
+ * One summarization per agent (across all arenas). Runs every summarizationIntervalHours.
  */
 export class MemoryScheduler {
   private intervalId: ReturnType<typeof setInterval> | undefined;
@@ -26,12 +25,10 @@ export class MemoryScheduler {
     const intervalMs =
       (this.deps.summarizationIntervalHours ?? 6) * 60 * 60 * 1000;
 
-    // Run immediately on start
     this.runSummarization().catch((err) => {
       console.error("[memoryScheduler] Initial summarization error:", err);
     });
 
-    // Then run periodically
     this.intervalId = setInterval(() => {
       this.runSummarization().catch((err) => {
         console.error("[memoryScheduler] Summarization error:", err);
@@ -54,9 +51,8 @@ export class MemoryScheduler {
 
   private async runSummarization(): Promise<void> {
     try {
-      console.log("[memoryScheduler] Starting AI summarization for all agents...");
+      console.log("[memoryScheduler] Starting AI persona summarization for all agents...");
 
-      // Get all active agent-arena pairs
       const registrations = await this.deps.prisma.arenaRegistration.findMany({
         where: { isActive: true },
         include: {
@@ -67,11 +63,6 @@ export class MemoryScheduler {
               profileJson: true,
             },
           },
-          arena: {
-            select: {
-              id: true,
-            },
-          },
         },
       });
 
@@ -79,36 +70,29 @@ export class MemoryScheduler {
         (this.deps.summarizationIntervalHours ?? 6) * 60 * 60 * 1000;
       const cutoffTime = new Date(Date.now() - summarizationIntervalMs);
 
+      const agentIds = [...new Set(registrations.map((r) => r.agentId))];
       let processed = 0;
       let skipped = 0;
 
-      for (const reg of registrations) {
+      for (const agentId of agentIds) {
+        const reg = registrations.find((r) => r.agentId === agentId);
+        if (!reg) continue;
+
         try {
-          // Check if summarization is needed
-          const memory = await this.deps.prisma.agentMemory.findUnique({
-            where: {
-              agentId_arenaId: {
-                agentId: reg.agentId,
-                arenaId: reg.arenaId,
-              },
-            },
+          const personaMemory = await this.deps.prisma.agentPersonaMemory.findUnique({
+            where: { agentId },
           });
 
-          // Skip if summarized recently
           if (
-            memory?.lastAiSummarizedAt &&
-            memory.lastAiSummarizedAt > cutoffTime
+            personaMemory?.lastAiSummarizedAt &&
+            personaMemory.lastAiSummarizedAt > cutoffTime
           ) {
             skipped++;
             continue;
           }
 
-          // Check if agent has enough trades to summarize (at least 5)
           const tradeCount = await this.deps.prisma.trade.count({
-            where: {
-              agentId: reg.agentId,
-              arenaId: reg.arenaId,
-            },
+            where: { agentId },
           });
 
           if (tradeCount < 5) {
@@ -116,46 +100,41 @@ export class MemoryScheduler {
             continue;
           }
 
-          // Parse agent profile
           const profileParsed = AgentProfileConfigSchema.safeParse(
             reg.agent.profileJson
           );
           if (!profileParsed.success) {
             console.warn(
-              `[memoryScheduler] Agent ${reg.agentId} has invalid profile, skipping`
+              `[memoryScheduler] Agent ${agentId} has invalid profile, skipping`
             );
             skipped++;
             continue;
           }
 
-          // Run AI summarization with timeout protection
           const summarizationPromise = this.deps.memoryService.summarizeWithAI(
-            reg.agentId,
-            reg.arenaId,
+            agentId,
             reg.agent.name,
             profileParsed.data
           );
-          
+
           const timeoutPromise = new Promise<void>((_, reject) => {
-            setTimeout(() => reject(new Error("Summarization timeout")), 60000); // 60s timeout
+            setTimeout(() => reject(new Error("Summarization timeout")), 60000);
           });
-          
+
           try {
             await Promise.race([summarizationPromise, timeoutPromise]);
             processed++;
           } catch (error) {
             console.error(
-              `[memoryScheduler] Summarization timeout/failed for agent ${reg.agentId} arena ${reg.arenaId}:`,
+              `[memoryScheduler] Summarization timeout/failed for agent ${agentId}:`,
               error
             );
-            // Continue with next agent
           }
 
-          // Small delay to avoid rate limits
           await new Promise((resolve) => setTimeout(resolve, 1000));
         } catch (error) {
           console.error(
-            `[memoryScheduler] Failed to summarize agent ${reg.agentId} arena ${reg.arenaId}:`,
+            `[memoryScheduler] Failed to summarize agent ${agentId}:`,
             error
           );
         }

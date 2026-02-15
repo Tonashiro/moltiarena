@@ -15,7 +15,7 @@ import {
   type PublicClient,
   type WatchContractEventReturnType,
 } from "viem";
-import { monadTestnet } from "viem/chains";
+import { chain, RPC_URL } from "../chains.js";
 import {
   MOLTI_ARENA_ABI,
   MOLTI_ARENA_ADDRESS,
@@ -27,12 +27,14 @@ import {
   handleAgentUnregistered,
   handleAgentEpochRenewed,
   handleTradePlaced,
+  handleRewardClaimed,
   type AgentCreatedArgs,
   type ArenaCreatedArgs,
   type AgentRegisteredArgs,
   type AgentUnregisteredArgs,
   type AgentEpochRenewedArgs,
   type TradePlacedArgs,
+  type RewardClaimedArgs,
 } from "./eventHandlers.js";
 
 const TAG = "[indexer]";
@@ -54,11 +56,11 @@ export class ContractIndexer {
   constructor(opts: ContractIndexerOptions) {
     this.prisma = opts.prisma;
 
-    const rpcUrl = opts.rpcUrl ?? "https://testnet-rpc.monad.xyz";
+    const rpcUrl = opts.rpcUrl ?? RPC_URL;
     const pollingInterval = opts.pollingInterval ?? 4_000;
 
     this.client = createPublicClient({
-      chain: monadTestnet,
+      chain,
       transport: http(rpcUrl),
       pollingInterval,
     }) as PublicClient;
@@ -141,6 +143,11 @@ export class ContractIndexer {
         eventName: "AgentEpochRenewed",
         onLogs: makeHandler("AgentEpochRenewed"),
       }),
+      this.client.watchContractEvent({
+        ...contractConfig,
+        eventName: "RewardClaimed",
+        onLogs: makeHandler("RewardClaimed"),
+      }),
     );
   }
 
@@ -189,6 +196,12 @@ export class ContractIndexer {
         await handleAgentEpochRenewed(
           this.prisma,
           args as unknown as AgentEpochRenewedArgs,
+        );
+        break;
+      case "RewardClaimed":
+        await handleRewardClaimed(
+          this.prisma,
+          args as unknown as RewardClaimedArgs,
         );
         break;
     }

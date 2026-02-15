@@ -11,7 +11,7 @@ export const AGENT_FIELD_TOOLTIPS: Record<string, string> = {
   maxPositionPct:
     "Maximum percentage of total portfolio value the agent can hold in tokens. Prevents over-concentration.",
   cooldownTicks:
-    "Minimum number of ticks (each tick ≈ 60 s) the agent must wait between consecutive trades. Higher values reduce trading frequency.",
+    "Minimum number of ticks (each tick ≈ 5 min) the agent must wait between consecutive trades. Higher values reduce trading frequency.",
   maxTradesPerWindow:
     "Maximum number of trades the agent can execute within a rolling time window. Prevents excessive trading activity.",
   minEvents1h:
@@ -44,7 +44,7 @@ export const DEFAULT_AGENT_PROFILE: AgentProfileConfig = {
   constraints: {
     maxTradePct: 0.2,
     maxPositionPct: 0.5,
-    cooldownTicks: 5,
+    cooldownTicks: 1,
     maxTradesPerWindow: 20,
   },
   filters: {

@@ -12,7 +12,6 @@ import {
   useRegisterToArenaOnChain,
 } from "@/app/lib/contracts/hooks";
 import { toastError, toastSuccess } from "@/app/lib/toast";
-import { monadTestnet } from "../../wagmi/config";
 import { Button } from "@/components/ui/button";
 import {
   AgentFormHeader,
@@ -29,7 +28,8 @@ export default function NewAgentPage() {
   const { address } = useAccount();
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
-  const isWrongChain = !!address && chainId !== monadTestnet.id;
+  const isWrongChain =
+    !!address && chainId !== Number(process.env.NEXT_PUBLIC_CHAIN_ID);
 
   const { data: creationFee } = useAgentCreationFee();
   const { data: moltiBalance } = useMoltiBalance(address);
@@ -45,7 +45,7 @@ export default function NewAgentPage() {
   const { data: arenasData, isLoading: arenasLoading } = useArenas();
   const arenas = useMemo<ArenaListItem[]>(
     () => arenasData?.arenas ?? [],
-    [arenasData?.arenas]
+    [arenasData?.arenas],
   );
 
   const form = useAgentCreationForm({
@@ -56,7 +56,9 @@ export default function NewAgentPage() {
     afterAgentCreated,
   });
 
-  const [registeringArenaId, setRegisteringArenaId] = useState<number | null>(null);
+  const [registeringArenaId, setRegisteringArenaId] = useState<number | null>(
+    null,
+  );
 
   const handleRegister = async (arena: ArenaListItem) => {
     if (!form.created || !address || !arena.onChainId) {
@@ -70,7 +72,9 @@ export default function NewAgentPage() {
     );
     setRegisteringArenaId(null);
     if (result) {
-      toastSuccess("Registered to " + (arena.name ?? "Arena " + arena.id) + "!");
+      toastSuccess(
+        "Registered to " + (arena.name ?? "Arena " + arena.id) + "!",
+      );
       afterRegistration(arena.id, form.created.agentId, address);
     }
   };
@@ -97,8 +101,12 @@ export default function NewAgentPage() {
           You are connected to the wrong network. Please switch to Monad Testnet
           to create an agent.
         </p>
-        <Button onClick={() => switchChain({ chainId: monadTestnet.id })}>
-          Switch to Monad Testnet
+        <Button
+          onClick={() =>
+            switchChain({ chainId: Number(process.env.NEXT_PUBLIC_CHAIN_ID) })
+          }
+        >
+          Switch to Monad
         </Button>
         <Button variant="link" asChild>
           <Link href="/agents">&larr; Back to agents</Link>
@@ -146,7 +154,10 @@ export default function NewAgentPage() {
         <ConstraintsSection
           constraints={form.profile.constraints}
           onConstraintsChange={(updater) =>
-            form.setProfile((p) => ({ ...p, constraints: updater(p.constraints) }))
+            form.setProfile((p) => ({
+              ...p,
+              constraints: updater(p.constraints),
+            }))
           }
         />
         <FiltersSection

@@ -92,6 +92,7 @@ export function useArena(
     enabled: arenaId !== null,
     staleTime: STALE_TIME_MS,
     initialData,
+    refetchOnWindowFocus: false,
     ...options,
   });
 }
@@ -219,6 +220,7 @@ export function useLeaderboard(
     initialData: initialData ?? undefined,
     refetchInterval: LIVE_POLL_INTERVAL_MS,
     staleTime: 0,
+    refetchOnWindowFocus: false,
     ...rest,
   });
 }
@@ -238,6 +240,7 @@ export function useTrades(
     initialData: initialData ?? undefined,
     refetchInterval: LIVE_POLL_INTERVAL_MS,
     staleTime: 0,
+    refetchOnWindowFocus: false,
     ...options,
   });
 }
@@ -249,6 +252,7 @@ export function useTokenTrades(arenaId: number | null) {
     enabled: Number.isInteger(arenaId) && (arenaId ?? 0) > 0,
     refetchInterval: LIVE_POLL_INTERVAL_MS,
     staleTime: 0,
+    refetchOnWindowFocus: false,
   });
 }
 

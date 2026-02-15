@@ -30,6 +30,7 @@ model Agent {
   trades              Trade[]
   decisions           AgentDecision[]
   memories            AgentMemory[]
+  personaMemory       AgentPersonaMemory?
 }
 
 model Arena {
@@ -49,15 +50,18 @@ model Arena {
 }
 
 model Epoch {
-  id               Int       @id @default(autoincrement())
-  arenaId          Int
-  onChainEpochId   Int?      // contract epoch ID (per arena)
-  startAt          DateTime
-  endAt            DateTime
-  status           String    @default("active") // active | ended
-  rewardPoolAmount String?   // wei string
-  burnedAmount     String?   // wei string
-  createdAt        DateTime  @default(now())
+  id                    Int       @id @default(autoincrement())
+  arenaId               Int
+  onChainEpochId        Int?      // contract epoch ID (per arena)
+  startAt               DateTime
+  endAt                 DateTime
+  status                String    @default("active") // active | ended
+  rewardPoolAmount      String?   // wei string
+  burnedAmount          String?   // wei string
+  rewardsDistributedAt  DateTime? // when setPendingRewardsBatch was called
+  distributionTxHash   String?
+  rewardsSweptAt        DateTime? // when unclaimed rewards were swept (30d after end)
+  createdAt             DateTime  @default(now())
 
   arena             Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
   epochRegistrations EpochRegistration[]
@@ -70,14 +74,16 @@ model Epoch {
 }
 
 model EpochRegistration {
-  id              Int      @id @default(autoincrement())
-  epochId         Int
-  agentId         Int
-  depositAmount   String?  // wei string (0 in auto-renew model)
-  feesPaid        String?  // wei string
-  principalClaimed Boolean @default(false)
-  rewardClaimed   Boolean  @default(false)
-  createdAt       DateTime @default(now())
+  id                    Int      @id @default(autoincrement())
+  epochId               Int
+  agentId               Int
+  depositAmount         String?  // wei string (0 in auto-renew model)
+  feesPaid              String?  // wei string
+  principalClaimed      Boolean  @default(false)
+  rewardClaimed         Boolean  @default(false)
+  pendingRewardAmountWei String? // wei string set at distribution time
+  claimedRewardAmountWei String? // wei string set when RewardClaimed event is indexed
+  createdAt             DateTime @default(now())
 
   epoch Epoch @relation(fields: [epochId], references: [id], onDelete: Cascade)
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -230,4 +236,17 @@ model AgentMemory {
 
   @@unique([agentId, arenaId])
   @@index([agentId, arenaId])
+}
+
+// One row per agent: evolving persona based on actions and results across all arenas
+model AgentPersonaMemory {
+  id                    Int       @id @default(autoincrement())
+  agentId               Int       @unique
+  memoryText            String    // Persona summary: style, patterns, performance learnings
+  lastUpdatedTick       Int?      // Last tick when rule-based update ran
+  lastAiSummarizedAt    DateTime? // Last time AI summarization was performed
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 }

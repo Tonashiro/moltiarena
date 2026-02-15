@@ -111,76 +111,110 @@ Respond with exactly this JSON object (no markdown, no code block):
 When action is BUY or SELL, sizePct MUST be > 0 (e.g. 0.09 for 9% trim). Use 0 only for HOLD.
 If posPct > maxPositionPct and you want to trim: action=SELL, sizePct=amount to trim (e.g. 0.09), NOT HOLD.`;
 
-function buildUserMessage(input: DecideTradeInput): string {
-  // Round numbers to reduce token usage (price to 6 decimals, others to 2)
-  const round = (n: number, decimals: number) =>
-    Math.round(n * Math.pow(10, decimals)) / Math.pow(10, decimals);
+const MULTI_ARENA_SYSTEM_PROMPT = `You are a trading agent managing positions across MULTIPLE arenas (tokens) in one go.
 
-  // Compact market data format
+Same rules as single-arena: obey creator constraints and filters (maxTradePct, maxPositionPct, cooldown, maxTradesPerWindow, minEvents1h, minVolumeMon1h). Custom rules apply to all arenas. When posPct > maxPositionPct for an arena, you MUST output SELL with sizePct > 0 for that arena to trim exposure.
+
+You will receive data for N arenas in order (Arena 0, Arena 1, ...). Output a JSON array of exactly N decision objects in the SAME order: one object per arena.
+
+Each object: {"action":"BUY"|"SELL"|"HOLD","sizePct":<0-1>,"confidence":<0-1>,"reason":"<short explanation>"}
+
+Respond with ONLY a JSON array (no markdown, no code block), e.g.:
+[{"action":"HOLD","sizePct":0,"confidence":0.5,"reason":"no signal"},{"action":"SELL","sizePct":0.1,"confidence":0.7,"reason":"trim exposure"}]
+
+When action is BUY or SELL, sizePct MUST be > 0 for that arena. Use 0 only for HOLD.`;
+
+/** One arena's market + portfolio for multi-arena decision. */
+export interface ArenaContextForDecision {
+  arenaLabel: string;
+  market: DecideTradeInput["market"];
+  portfolio: DecideTradeInput["portfolio"];
+}
+
+/** Input for one AI call that returns decisions for all arenas an agent is in. */
+export interface DecideTradeMultiArenaInput {
+  profile: DecideTradeInput["profile"];
+  customRules?: string;
+  memory?: string;
+  arenas: ArenaContextForDecision[];
+}
+
+const TradeDecisionArraySchema = z.array(TradeDecisionSchema);
+
+function round(n: number, decimals: number): number {
+  return Math.round(n * Math.pow(10, decimals)) / Math.pow(10, decimals);
+}
+
+function formatMarketAndPortfolio(
+  market: DecideTradeInput["market"],
+  portfolio: DecideTradeInput["portfolio"],
+): string {
   const marketData = {
-    p: round(input.market.price, 6), // price
-    r1: round(input.market.ret_1m_pct, 2), // ret_1m_pct
-    r5: round(input.market.ret_5m_pct, 2), // ret_5m_pct
-    v: round(input.market.vol_5m_pct, 2), // vol_5m_pct
-    e: input.market.events_1h, // events_1h
-    vol: round(input.market.volume_mon_1h, 2), // volume_mon_1h
-    pt: input.market.price_tail.map((p) => round(p, 6)), // price_tail (compact)
-    // Enhancement 1: Buy/Sell metrics
-    bc: input.market.buyCount, // buyCount
-    sc: input.market.sellCount, // sellCount
-    wc: input.market.swapCount, // swapCount
-    bsr: round(input.market.buySellRatio, 2), // buySellRatio
-    // Enhancement 2: Recent events (already compact format)
-    re: input.market.recentEvents, // recentEvents: [["B", price, volume], ...]
-    // Enhancement 3: Trader metrics
-    ut: input.market.uniqueTraders, // uniqueTraders
-    avpt: round(input.market.avgVolumePerTrader, 2), // avgVolumePerTrader
-    lt: round(input.market.largestTrade, 2), // largestTrade
-    wh: input.market.whaleActivity, // whaleActivity (boolean)
-    // Enhancement 4: Patterns
-    m: input.market.momentum, // momentum: "B"|"S"|"N"
-    vt: input.market.volumeTrend, // volumeTrend: "I"|"D"|"S"
-    pv: input.market.priceVolatility, // priceVolatility: "H"|"M"|"L"
+    p: round(market.price, 6),
+    r1: round(market.ret_1m_pct, 2),
+    r5: round(market.ret_5m_pct, 2),
+    v: round(market.vol_5m_pct, 2),
+    e: market.events_1h,
+    vol: round(market.volume_mon_1h, 2),
+    pt: market.price_tail.map((p) => round(p, 6)),
+    bc: market.buyCount,
+    sc: market.sellCount,
+    wc: market.swapCount,
+    bsr: round(market.buySellRatio, 2),
+    re: market.recentEvents,
+    ut: market.uniqueTraders,
+    avpt: round(market.avgVolumePerTrader, 2),
+    lt: round(market.largestTrade, 2),
+    wh: market.whaleActivity,
+    m: market.momentum,
+    vt: market.volumeTrend,
+    pv: market.priceVolatility,
   };
-
-  // ticksSinceLastTrade: null if never traded, else currentTick - lastTradeTick
   const ticksSinceLastTrade =
-    input.portfolio.lastTradeTick != null
-      ? input.portfolio.currentTick - input.portfolio.lastTradeTick
+    portfolio.lastTradeTick != null
+      ? portfolio.currentTick - portfolio.lastTradeTick
       : null;
-
-  // Compact portfolio format (c=cash to buy, t=tokens held, eq=equity, posPct=token exposure %, tsl=ticks since last trade)
   const portfolioData = {
-    c: round(input.portfolio.cashMon, 2), // cash available to BUY
-    t: round(input.portfolio.tokenUnits, 2), // tokens held (can SELL)
-    eq: round(input.portfolio.equity, 2), // total portfolio value
-    posPct: round(input.portfolio.positionPct, 2), // token exposure % (0=all cash, 1=all tokens)
-    init: round(input.portfolio.initialCapital, 2), // initial capital
-    aep: input.portfolio.avgEntryPrice
-      ? round(input.portfolio.avgEntryPrice, 6)
-      : null, // avg entry price
-    tw: input.portfolio.tradesThisWindow, // trades this window
-    ltt: input.portfolio.lastTradeTick, // tick of last trade
-    tsl: ticksSinceLastTrade, // ticks since last trade (null if never)
+    c: round(portfolio.cashMon, 2),
+    t: round(portfolio.tokenUnits, 2),
+    eq: round(portfolio.equity, 2),
+    posPct: round(portfolio.positionPct, 2),
+    init: round(portfolio.initialCapital, 2),
+    aep: portfolio.avgEntryPrice ? round(portfolio.avgEntryPrice, 6) : null,
+    tw: portfolio.tradesThisWindow,
+    ltt: portfolio.lastTradeTick,
+    tsl: ticksSinceLastTrade,
   };
+  return ["M:", JSON.stringify(marketData), "P:", JSON.stringify(portfolioData)].join("\n");
+}
 
+function buildUserMessage(input: DecideTradeInput): string {
   const parts: string[] = [
-    "M:", // Market (shortened)
-    JSON.stringify(marketData),
-    "P:", // Portfolio (shortened)
-    JSON.stringify(portfolioData),
-    "Cfg:", // Profile Config (shortened)
+    formatMarketAndPortfolio(input.market, input.portfolio),
+    "Cfg:",
     JSON.stringify(input.profile),
   ];
   if (input.customRules?.trim()) {
-    // Sanitize custom rules before including in prompt
-    const sanitizedRules = sanitizeString(input.customRules, 500);
-    parts.push("Rules:", sanitizedRules);
+    parts.push("Rules:", sanitizeString(input.customRules, 500));
   }
   if (input.memory?.trim()) {
-    // Sanitize memory before including in prompt
-    const sanitizedMemory = sanitizeString(input.memory, 1000);
-    parts.push("Mem:", sanitizedMemory); // Memory (shortened)
+    parts.push("Mem:", sanitizeString(input.memory, 1000));
+  }
+  return parts.join("\n");
+}
+
+function buildUserMessageMulti(input: DecideTradeMultiArenaInput): string {
+  const parts: string[] = [];
+  input.arenas.forEach((a, i) => {
+    parts.push(`Arena ${i} (${a.arenaLabel}):`);
+    parts.push(formatMarketAndPortfolio(a.market, a.portfolio));
+  });
+  parts.push("Cfg:", JSON.stringify(input.profile));
+  if (input.customRules?.trim()) {
+    parts.push("Rules:", sanitizeString(input.customRules, 500));
+  }
+  if (input.memory?.trim()) {
+    parts.push("Mem:", sanitizeString(input.memory, 1000));
   }
   return parts.join("\n");
 }
@@ -201,12 +235,62 @@ function extractMessageText(
     .join("\n");
 }
 
+/**
+ * Extract the first complete JSON value (object or array) from content that may
+ * include markdown, code fences, or trailing text. Uses bracket matching; skips
+ * brackets inside double-quoted strings.
+ */
 function parseJsonFromContent(content: string): unknown {
   const trimmed = content.trim();
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}") + 1;
-  if (start === -1 || end <= start) throw new Error("No JSON object");
-  return JSON.parse(trimmed.slice(start, end)) as unknown;
+  const withoutFence = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  const firstBracket = withoutFence.search(/[\[{]/);
+  if (firstBracket === -1) throw new Error("No JSON object or array");
+  const start = firstBracket;
+  const stack: string[] = [withoutFence[start]];
+  let i = start + 1;
+  const len = withoutFence.length;
+  let inString: '"' | "'" | null = null;
+  while (i < len && stack.length > 0) {
+    const c = withoutFence[i];
+    if (inString !== null) {
+      if (c === "\\") {
+        i += 2;
+        continue;
+      }
+      if (c === inString) inString = null;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = c;
+      i++;
+      continue;
+    }
+    if (c === "[" || c === "{") {
+      stack.push(c);
+      i++;
+      continue;
+    }
+    if (c === "]") {
+      if (stack[stack.length - 1] !== "[") throw new Error("Unclosed JSON");
+      stack.pop();
+      i++;
+      continue;
+    }
+    if (c === "}") {
+      if (stack[stack.length - 1] !== "{") throw new Error("Unclosed JSON");
+      stack.pop();
+      i++;
+      continue;
+    }
+    i++;
+  }
+  if (stack.length !== 0) throw new Error("Unclosed JSON");
+  const slice = withoutFence.slice(start, i);
+  return JSON.parse(slice) as unknown;
 }
 
 /** Safe one-line summary for logging (no circular refs, bounded length). */
@@ -260,7 +344,7 @@ export async function decideTrade(
 
     if (!content?.trim()) {
       // Always log when content is empty so we can diagnose (finish_reason, usage, content shape)
-      const msg = choice?.message as Record<string, unknown> | undefined;
+      const msg = choice?.message as unknown as Record<string, unknown> | undefined;
       const refusal = msg?.refusal;
       const parts = Array.isArray(rawContent) ? rawContent : [];
       const hasRefusalPart = parts.some((p: unknown) => p && typeof p === "object" && (p as { type?: string }).type === "refusal");
@@ -301,5 +385,71 @@ export async function decideTrade(
       console.error("[AI] OpenAI request failed:", err);
     }
     return MODEL_ERROR_DECISION;
+  }
+}
+
+/** One AI request per agent: get one decision per arena in the same order as input.arenas. */
+export async function decideTradesForAllArenas(
+  input: DecideTradeMultiArenaInput,
+): Promise<TradeDecision[]> {
+  const n = input.arenas.length;
+  if (n === 0) return [];
+
+  const fallback = (): TradeDecision[] => Array.from({ length: n }, () => ({ ...MODEL_ERROR_DECISION }));
+
+  try {
+    if (DEBUG) {
+      console.log(`[AI] Calling OpenAI (model: ${model}) for ${n} arena(s) in one request`);
+    }
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: MULTI_ARENA_SYSTEM_PROMPT },
+        { role: "user", content: buildUserMessageMulti(input) },
+      ],
+      max_completion_tokens: Math.min(4096, 512 + n * 256),
+      reasoning_effort: "low",
+    });
+
+    const choice = completion.choices?.[0];
+    const rawContent = choice?.message?.content;
+    const content = extractMessageText(rawContent);
+
+    if (!content?.trim()) {
+      if (DEBUG) {
+        console.warn("[AI] Multi-arena OpenAI empty content, using HOLD for all arenas");
+      }
+      return fallback();
+    }
+
+    const raw = parseJsonFromContent(content);
+    const parsed = TradeDecisionArraySchema.safeParse(raw);
+    if (!parsed.success) {
+      if (DEBUG) {
+        console.warn("[AI] Multi-arena response invalid or not array:", parsed.error.message);
+      }
+      return fallback();
+    }
+
+    const decisions = parsed.data;
+    if (decisions.length !== n) {
+      if (DEBUG) {
+        console.warn(`[AI] Multi-arena expected ${n} decisions, got ${decisions.length}, using HOLD for all`);
+      }
+      return fallback();
+    }
+
+    if (DEBUG) {
+      decisions.forEach((d, i) => {
+        const reasonShort = d.reason.length > 40 ? d.reason.slice(0, 40) + "…" : d.reason;
+        console.log(`[AI] Arena ${i}: action=${d.action} sizePct=${(d.sizePct * 100).toFixed(0)}% reason="${reasonShort}"`);
+      });
+    }
+    return decisions;
+  } catch (err) {
+    if (DEBUG) {
+      console.error("[AI] Multi-arena OpenAI request failed:", err);
+    }
+    return fallback();
   }
 }

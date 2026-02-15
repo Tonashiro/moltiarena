@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { InMemoryMarketStore } from "../market/store.js";
-import { decideTrade } from "../ai/decision.js";
+import type { ArenaContextForDecision } from "../ai/decision.js";
+import { decideTradesForAllArenas } from "../ai/decision.js";
 import { applyGuardrails, getEffectiveFilters } from "./guardrails.js";
 import { executePaperTrade } from "./execution.js";
 import { AgentProfileConfigSchema } from "../schemas/agentProfile.js";
@@ -61,25 +62,50 @@ type ArenaWithRegistrations =
     ? T
     : never;
 
-async function processOneAgent(
+type Reg = {
+  agentId: number;
+  agent: {
+    id: number;
+    name: string;
+    profileJson: unknown;
+    onChainId: number | null;
+    encryptedSignerKey: string | null;
+    smartAccountAddress: string | null;
+  };
+};
+
+/** Per (agent, arena) context after validation and loading; used for one AI call per agent. */
+export interface AgentArenaContext {
+  agent: Reg["agent"];
+  arena: ArenaWithRegistrations & { onChainId: number | null };
+  snapshot: MarketSnapshot;
+  portfolioRow: Awaited<ReturnType<PrismaClient["portfolio"]["findFirst"]>> & NonNullable<Awaited<ReturnType<PrismaClient["portfolio"]["findFirst"]>>>;
+  portfolio: {
+    cashMon: number;
+    tokenUnits: number;
+    moltiLocked: number;
+    avgEntryPrice: number | null;
+    tradesThisWindow: number;
+    lastTradeTick: number | null;
+    initialCapital: number | null;
+  };
+  currentEpoch: NonNullable<Awaited<ReturnType<typeof getCurrentEpoch>>>;
+  epochReg: NonNullable<Awaited<ReturnType<PrismaClient["epochRegistration"]["findUnique"]>>>;
+  walletAddress: `0x${string}`;
+  walletMoltiWei: bigint;
+  agentOnChainId: number;
+  arenaOnChainId: number;
+  profileConfig: import("../schemas/agentProfile.js").AgentProfileConfig;
+}
+
+/** Prepare context for one (agent, arena). Returns null if agent should be skipped. */
+async function prepareAgentArenaContext(
   deps: ArenaEngineDeps,
   arena: ArenaWithRegistrations & { onChainId: number | null },
   snapshot: MarketSnapshot,
-  reg: {
-    agentId: number;
-    agent: {
-      id: number;
-      name: string;
-      profileJson: unknown;
-      onChainId: number | null;
-      encryptedSignerKey: string | null;
-      smartAccountAddress: string | null;
-    };
-  },
-): Promise<void> {
+  reg: Reg,
+): Promise<AgentArenaContext | null> {
   const agent = reg.agent;
-
-  // All agents must have on-chain credentials
   if (
     !agent.encryptedSignerKey ||
     agent.onChainId == null ||
@@ -87,13 +113,10 @@ async function processOneAgent(
     !agent.smartAccountAddress
   ) {
     if (DEBUG) {
-      console.log(
-        `[arenaEngine] agent ${agent.id} (${agent.name}) missing on-chain credentials, skip`,
-      );
+      console.log(`[arenaEngine] agent ${agent.id} (${agent.name}) missing on-chain credentials, skip`);
     }
-    return;
+    return null;
   }
-
   const profileParsed = AgentProfileConfigSchema.safeParse(agent.profileJson);
   if (!profileParsed.success) {
     if (DEBUG) {
@@ -101,7 +124,7 @@ async function processOneAgent(
     } else {
       console.warn(`[arenaEngine] agent ${agent.id} invalid profile, skip`);
     }
-    return;
+    return null;
   }
   const profileConfig = profileParsed.data;
 
@@ -115,14 +138,11 @@ async function processOneAgent(
         `[arenaEngine] no portfolio agent ${agent.id} (${agent.name}) arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...), skip`,
       );
     } else {
-      console.warn(
-        `[arenaEngine] no portfolio agent ${agent.id} arena ${arena.id}, skip`,
-      );
+      console.warn(`[arenaEngine] no portfolio agent ${agent.id} arena ${arena.id}, skip`);
     }
-    return;
+    return null;
   }
 
-  // Read on-chain state: wallet MOLTI balance as "cash", contract tokenUnits + moltiLocked
   const walletAddress = agent.smartAccountAddress as `0x${string}`;
   const agentOnChainId = agent.onChainId as number;
   const arenaOnChainId = arena.onChainId as number;
@@ -146,91 +166,85 @@ async function processOneAgent(
     initialCapital: portfolioRow.initialCapital,
   };
 
-  // Get agent memory for this arena (if memory service is available)
-  const memory =
-    deps.memoryService !== undefined
-      ? await deps.memoryService.getMemory(agent.id, arena.id)
-      : undefined;
+  const currentEpoch = await getCurrentEpoch(deps, arena.id);
+  if (!currentEpoch) {
+    if (DEBUG) {
+      console.log(`[arenaEngine] agent ${agent.id} (${agent.name}) arena ${arena.id}: no current epoch, skip AI`);
+    }
+    return null;
+  }
+  const epochReg = await deps.prisma.epochRegistration.findUnique({
+    where: { epochId_agentId: { epochId: currentEpoch.id, agentId: agent.id } },
+  });
+  if (!epochReg) {
+    if (DEBUG) {
+      console.log(
+        `[arenaEngine] agent ${agent.id} (${agent.name}) arena ${arena.id}: not renewed for epoch ${currentEpoch.id}, skip AI`,
+      );
+    }
+    return null;
+  }
 
   if (DEBUG) {
     console.log(
-      `[arenaEngine] AI decision agent ${agent.id} (${agent.name}) arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) tick ${snapshot.tick} ` +
+      `[arenaEngine] agent ${agent.id} (${agent.name}) arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) tick ${snapshot.tick} ` +
         `cash=${cashMon.toFixed(2)} tokens=${tokenUnits.toFixed(4)} locked=${moltiLocked.toFixed(2)}`,
     );
   }
-  const equityVal = equity(portfolio.cashMon, portfolio.tokenUnits, snapshot.price);
-  const positionPctVal =
-    equityVal > 0
-      ? (portfolio.tokenUnits * snapshot.price) / equityVal
-      : 0;
 
-  const modelDecision = await decideTrade({
-    market: {
-      price: snapshot.price,
-      ret_1m_pct: snapshot.ret_1m_pct,
-      ret_5m_pct: snapshot.ret_5m_pct,
-      vol_5m_pct: snapshot.vol_5m_pct,
-      events_1h: snapshot.events_1h,
-      volume_mon_1h: snapshot.volume_mon_1h,
-      price_tail: snapshot.price_tail,
-      buyCount: snapshot.buyCount,
-      sellCount: snapshot.sellCount,
-      swapCount: snapshot.swapCount,
-      buySellRatio: snapshot.buySellRatio,
-      recentEvents: snapshot.recentEvents,
-      uniqueTraders: snapshot.uniqueTraders,
-      avgVolumePerTrader: snapshot.avgVolumePerTrader,
-      largestTrade: snapshot.largestTrade,
-      whaleActivity: snapshot.whaleActivity,
-      momentum: snapshot.momentum,
-      volumeTrend: snapshot.volumeTrend,
-      priceVolatility: snapshot.priceVolatility,
-    },
-    portfolio: {
-      cashMon: portfolio.cashMon,
-      tokenUnits: portfolio.tokenUnits,
-      avgEntryPrice: portfolio.avgEntryPrice,
-      tradesThisWindow: portfolio.tradesThisWindow,
-      lastTradeTick: portfolio.lastTradeTick,
-      currentTick: snapshot.tick,
-      equity: equityVal,
-      positionPct: positionPctVal,
-      initialCapital: portfolio.initialCapital ?? 0,
-    },
-    profile: {
-      goal: profileConfig.goal,
-      style: profileConfig.style,
-      constraints: profileConfig.constraints,
-      filters: getEffectiveFilters(profileConfig.filters),
-    },
-    customRules: profileConfig.customRules,
-    memory,
-  });
+  return {
+    agent,
+    arena,
+    snapshot,
+    portfolioRow,
+    portfolio,
+    currentEpoch,
+    epochReg,
+    walletAddress,
+    walletMoltiWei,
+    agentOnChainId,
+    arenaOnChainId,
+    profileConfig,
+  };
+}
 
-  const finalDecision = applyGuardrails({
-    snapshot: {
-      tick: snapshot.tick,
-      price: snapshot.price,
-      events_1h: snapshot.events_1h,
-      volume_mon_1h: snapshot.volume_mon_1h,
-    },
-    portfolio: {
-      cashMon: portfolio.cashMon,
-      tokenUnits: portfolio.tokenUnits,
-      tradesThisWindow: portfolio.tradesThisWindow,
-      lastTradeTick: portfolio.lastTradeTick,
-    },
-    profileConfig: profileConfig,
-    modelDecision,
-  });
+function snapshotToMarket(snapshot: MarketSnapshot) {
+  return {
+    price: snapshot.price,
+    ret_1m_pct: snapshot.ret_1m_pct,
+    ret_5m_pct: snapshot.ret_5m_pct,
+    vol_5m_pct: snapshot.vol_5m_pct,
+    events_1h: snapshot.events_1h,
+    volume_mon_1h: snapshot.volume_mon_1h,
+    price_tail: snapshot.price_tail,
+    buyCount: snapshot.buyCount,
+    sellCount: snapshot.sellCount,
+    swapCount: snapshot.swapCount,
+    buySellRatio: snapshot.buySellRatio,
+    recentEvents: snapshot.recentEvents,
+    uniqueTraders: snapshot.uniqueTraders,
+    avgVolumePerTrader: snapshot.avgVolumePerTrader,
+    largestTrade: snapshot.largestTrade,
+    whaleActivity: snapshot.whaleActivity,
+    momentum: snapshot.momentum,
+    volumeTrend: snapshot.volumeTrend,
+    priceVolatility: snapshot.priceVolatility,
+  };
+}
 
+/** Apply guardrails and execute (MON check, record decision, HOLD vs on-chain trade, portfolio/memory). */
+async function executeDecisionForAgentArena(
+  deps: ArenaEngineDeps,
+  ctx: AgentArenaContext,
+  finalDecision: import("../ai/decision.js").TradeDecision,
+): Promise<void> {
+  const { agent, arena, snapshot, portfolioRow, portfolio, currentEpoch } = ctx;
   const action = finalDecision.action;
   const sizePct = finalDecision.sizePct ?? 0;
 
-  // Pre-flight MON check: skip agents with insufficient gas for on-chain trades
   if (action !== "HOLD") {
     try {
-      const monBal = await getMonBalance(walletAddress);
+      const monBal = await getMonBalance(ctx.walletAddress);
       if (monBal < MON_BALANCE_THRESHOLD_WEI) {
         await deps.prisma.agentDecision.create({
           data: {
@@ -247,26 +261,22 @@ async function processOneAgent(
           },
         });
         if (DEBUG) {
-          console.log(
-            `[arenaEngine] agent ${agent.id} skipped: low MON balance (${monBal})`
-          );
+          console.log(`[arenaEngine] agent ${agent.id} skipped: low MON balance (${monBal})`);
         }
         return;
       }
     } catch (err) {
       console.warn(
         `[arenaEngine] agent ${agent.id} MON balance check failed, skip:`,
-        err instanceof Error ? err.message : err
+        err instanceof Error ? err.message : err,
       );
       return;
     }
   }
 
-  // Compute unrealized PnL at decision time (for HOLD display in audit log)
   const equityNow = equity(portfolio.cashMon, portfolio.tokenUnits, snapshot.price);
-  const pnlPctAtDecision = pnlPct(equityNow, portfolio.initialCapital);
+  const pnlPctAtDecision = pnlPct(equityNow, portfolio.initialCapital ?? 0);
 
-  // Store AgentDecision for every tick (audit log)
   const decisionRecord = await deps.prisma.agentDecision.create({
     data: {
       agentId: agent.id,
@@ -284,61 +294,18 @@ async function processOneAgent(
   });
 
   if (action === "HOLD") {
-    // No on-chain call, no portfolio update; still update memory
-    if (deps.memoryService !== undefined) {
-      try {
-        const recentTrades = await deps.prisma.trade.findMany({
-          where: { agentId: agent.id, arenaId: arena.id },
-          orderBy: { tick: "desc" },
-          take: 10,
-        });
-        const equityNow = equity(
-          portfolio.cashMon,
-          portfolio.tokenUnits,
-          snapshot.price
-        );
-        const pnlNow = pnlPct(equityNow, portfolio.initialCapital);
-        const totalTrades = await deps.prisma.trade.count({
-          where: { agentId: agent.id, arenaId: arena.id },
-        });
-        await deps.memoryService.updateMemory(
-          agent.id,
-          arena.id,
-          snapshot.tick,
-          recentTrades.reverse().map((t) => ({
-            tick: t.tick,
-            action: t.action,
-            sizePct: t.sizePct,
-            price: t.price,
-            reason: t.reason,
-          })),
-          pnlNow,
-          totalTrades
-        );
-      } catch {
-        // Ignore memory update errors for HOLD
-      }
-    }
     return;
   }
 
-  // BUY/SELL: on-chain first, then update DB only on success
   const encKey = agent.encryptedSignerKey as string;
+  const epochOnChainId = currentEpoch.onChainEpochId ?? 0;
 
-  const currentEpoch = await getCurrentEpoch(
-    { prisma: deps.prisma },
-    arena.id
-  );
-  const epochOnChainId = currentEpoch?.onChainEpochId ?? 0;
-
-  // For BUY: compute the MOLTI amount to send from wallet
   let buyAmountWei: bigint | undefined;
   if (action === "BUY" && sizePct > 0) {
-    buyAmountWei =
-      (walletMoltiWei * BigInt(Math.floor(sizePct * 1e18))) / BigInt(1e18);
+    buyAmountWei = (ctx.walletMoltiWei * BigInt(Math.floor(sizePct * 1e18))) / BigInt(1e18);
     if (buyAmountWei === 0n) {
       console.warn(
-        `[arenaEngine] agent ${agent.id} BUY amount is 0 (wallet=${walletMoltiWei} sizePct=${sizePct}), skip`
+        `[arenaEngine] agent ${agent.id} BUY amount is 0 (wallet=${ctx.walletMoltiWei} sizePct=${sizePct}), skip`,
       );
       await deps.prisma.agentDecision.update({
         where: { id: decisionRecord.id },
@@ -352,8 +319,8 @@ async function processOneAgent(
   try {
     txHash = await executeOnChainTrade({
       encryptedSignerKey: encKey,
-      agentOnChainId,
-      arenaOnChainId,
+      agentOnChainId: ctx.agentOnChainId,
+      arenaOnChainId: ctx.arenaOnChainId,
       epochOnChainId,
       action,
       sizePct,
@@ -362,10 +329,7 @@ async function processOneAgent(
       tick: snapshot.tick,
     });
   } catch (err) {
-    console.error(
-      `[arenaEngine] on-chain trade failed agent ${agent.id} arena ${arena.id}:`,
-      err
-    );
+    console.error(`[arenaEngine] on-chain trade failed agent ${agent.id} arena ${arena.id}:`, err);
     await deps.prisma.agentDecision.update({
       where: { id: decisionRecord.id },
       data: { status: "failed" },
@@ -381,17 +345,15 @@ async function processOneAgent(
     return;
   }
 
-  // On-chain success: re-read on-chain state and sync DB
   const [walletAfterWei, portfolioAfter] = await Promise.all([
-    getMoltiBalance(walletAddress),
-    getContractPortfolio(agentOnChainId, arenaOnChainId),
+    getMoltiBalance(ctx.walletAddress),
+    getContractPortfolio(ctx.agentOnChainId, ctx.arenaOnChainId),
   ]);
 
   const cashAfter = Number(formatEther(walletAfterWei));
   const tokenUnitsAfter = Number(formatEther(portfolioAfter.tokenUnits));
   const moltiLockedAfter = Number(formatEther(portfolioAfter.moltiLocked));
 
-  // Use on-chain paper trade to compute trade record for DB
   const { nextPortfolio, tradeRecord } = executePaperTrade(
     { tick: snapshot.tick, price: snapshot.price },
     {
@@ -405,7 +367,6 @@ async function processOneAgent(
     finalDecision,
   );
 
-  // Override paper values with actual on-chain state
   nextPortfolio.cashMon = cashAfter;
   nextPortfolio.tokenUnits = tokenUnitsAfter;
   nextPortfolio.moltiLocked = moltiLockedAfter;
@@ -428,7 +389,7 @@ async function processOneAgent(
         data: {
           agentId: agent.id,
           arenaId: arena.id,
-          epochId: currentEpoch?.id ?? null,
+          epochId: currentEpoch.id,
           tick: tradeRecord.tick,
           action: tradeRecord.action,
           sizePct: tradeRecord.sizePct,
@@ -454,45 +415,70 @@ async function processOneAgent(
       `[arenaEngine] agent ${agent.id} (${agent.name}) ${tradeRecord.action} ${(tradeRecord.sizePct * 100).toFixed(0)}% @ ${tradeRecord.price} arena ${arena.name ?? arena.id} tx=${txHash}`,
     );
   }
+}
 
-  // Update agent memory after successful trade
-  if (deps.memoryService !== undefined && tradeRecord) {
-    try {
-      const recentTrades = await deps.prisma.trade.findMany({
-        where: { agentId: agent.id, arenaId: arena.id },
-        orderBy: { tick: "desc" },
-        take: 10,
-      });
-      const equityAfter = equity(
-        nextPortfolio.cashMon,
-        nextPortfolio.tokenUnits,
-        snapshot.price
-      );
-      const pnlAfter = pnlPct(equityAfter, portfolio.initialCapital);
-      const totalTrades = await deps.prisma.trade.count({
-        where: { agentId: agent.id, arenaId: arena.id },
-      });
-      await deps.memoryService.updateMemory(
-        agent.id,
-        arena.id,
-        snapshot.tick,
-        recentTrades.reverse().map((t) => ({
-          tick: t.tick,
-          action: t.action,
-          sizePct: t.sizePct,
-          price: t.price,
-          reason: t.reason,
-        })),
-        pnlAfter,
-        totalTrades
-      );
-    } catch (error) {
-      console.error(
-        `[arenaEngine] Failed to update memory for agent ${agent.id} arena ${arena.id}:`,
-        error
-      );
-    }
-  }
+async function processOneAgent(
+  deps: ArenaEngineDeps,
+  arena: ArenaWithRegistrations & { onChainId: number | null },
+  snapshot: MarketSnapshot,
+  reg: Reg,
+): Promise<void> {
+  const ctx = await prepareAgentArenaContext(deps, arena, snapshot, reg);
+  if (!ctx) return;
+
+  const equityVal = equity(ctx.portfolio.cashMon, ctx.portfolio.tokenUnits, ctx.snapshot.price);
+  const positionPctVal =
+    equityVal > 0
+      ? (ctx.portfolio.tokenUnits * ctx.snapshot.price) / equityVal
+      : 0;
+
+  const memory =
+    deps.memoryService !== undefined
+      ? await deps.memoryService.getMemory(ctx.agent.id)
+      : undefined;
+
+  const { decideTrade } = await import("../ai/decision.js");
+  const modelDecision = await decideTrade({
+    market: snapshotToMarket(ctx.snapshot),
+    portfolio: {
+      cashMon: ctx.portfolio.cashMon,
+      tokenUnits: ctx.portfolio.tokenUnits,
+      avgEntryPrice: ctx.portfolio.avgEntryPrice,
+      tradesThisWindow: ctx.portfolio.tradesThisWindow,
+      lastTradeTick: ctx.portfolio.lastTradeTick,
+      currentTick: ctx.snapshot.tick,
+      equity: equityVal,
+      positionPct: positionPctVal,
+      initialCapital: ctx.portfolio.initialCapital ?? 0,
+    },
+    profile: {
+      goal: ctx.profileConfig.goal,
+      style: ctx.profileConfig.style,
+      constraints: ctx.profileConfig.constraints,
+      filters: getEffectiveFilters(ctx.profileConfig.filters),
+    },
+    customRules: ctx.profileConfig.customRules,
+    memory,
+  });
+
+  const finalDecision = applyGuardrails({
+    snapshot: {
+      tick: ctx.snapshot.tick,
+      price: ctx.snapshot.price,
+      events_1h: ctx.snapshot.events_1h,
+      volume_mon_1h: ctx.snapshot.volume_mon_1h,
+    },
+    portfolio: {
+      cashMon: ctx.portfolio.cashMon,
+      tokenUnits: ctx.portfolio.tokenUnits,
+      tradesThisWindow: ctx.portfolio.tradesThisWindow,
+      lastTradeTick: ctx.portfolio.lastTradeTick,
+    },
+    profileConfig: ctx.profileConfig,
+    modelDecision,
+  });
+
+  await executeDecisionForAgentArena(deps, ctx, finalDecision);
 }
 
 export function startArenaEngine(deps: ArenaEngineDeps): { stop: () => void } {
@@ -527,39 +513,150 @@ export function startArenaEngine(deps: ArenaEngineDeps): { stop: () => void } {
       if (DEBUG && arenas.length > 0) {
         console.log(`[arenaEngine] tick: ${arenas.length} arena(s) with active agents`);
       }
+
+      // Build (agent, arena) contexts then group by agent for one AI call per agent
+      const contexts: AgentArenaContext[] = [];
+      for (const arena of arenas) {
+        const snapshot = deps.marketStore.get(arena.tokenAddress);
+        if (!snapshot) {
+          if (DEBUG) {
+            console.log(
+              `[arenaEngine] arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) no market snapshot, skip (is token in ARENA_TOKENS?)`,
+            );
+          }
+          continue;
+        }
+        if (DEBUG) {
+          console.log(
+            `[arenaEngine] arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) ${arena.arenaRegistrations.length} agent(s)`,
+          );
+        }
+        for (const reg of arena.arenaRegistrations) {
+          try {
+            const ctx = await prepareAgentArenaContext(deps, arena, snapshot, reg);
+            if (ctx) contexts.push(ctx);
+          } catch (error_) {
+            console.error(`[arenaEngine] prepare agent ${reg.agentId} arena ${arena.id} failed:`, error_);
+          }
+        }
+      }
+
+      const byAgentId = new Map<number, AgentArenaContext[]>();
+      for (const ctx of contexts) {
+        const list = byAgentId.get(ctx.agent.id) ?? [];
+        list.push(ctx);
+        byAgentId.set(ctx.agent.id, list);
+      }
+      for (const list of byAgentId.values()) {
+        list.sort((a, b) => a.arena.id - b.arena.id);
+      }
+
+      for (const [, list] of byAgentId) {
+        try {
+          const arenasForAi: ArenaContextForDecision[] = list.map((c) => {
+            const eq = equity(c.portfolio.cashMon, c.portfolio.tokenUnits, c.snapshot.price);
+            const posPct = eq > 0 ? (c.portfolio.tokenUnits * c.snapshot.price) / eq : 0;
+            return {
+              arenaLabel: c.arena.name ?? c.arena.tokenAddress.slice(0, 10) + "...",
+              market: snapshotToMarket(c.snapshot),
+              portfolio: {
+                cashMon: c.portfolio.cashMon,
+                tokenUnits: c.portfolio.tokenUnits,
+                avgEntryPrice: c.portfolio.avgEntryPrice,
+                tradesThisWindow: c.portfolio.tradesThisWindow,
+                lastTradeTick: c.portfolio.lastTradeTick,
+                currentTick: c.snapshot.tick,
+                equity: eq,
+                positionPct: posPct,
+                initialCapital: c.portfolio.initialCapital ?? 0,
+              },
+            };
+          });
+
+          const memory =
+            deps.memoryService !== undefined
+              ? await deps.memoryService.getMemory(list[0].agent.id)
+              : undefined;
+
+          const multiInput = {
+            profile: {
+              goal: list[0].profileConfig.goal,
+              style: list[0].profileConfig.style,
+              constraints: list[0].profileConfig.constraints,
+              filters: getEffectiveFilters(list[0].profileConfig.filters),
+            },
+            customRules: list[0].profileConfig.customRules,
+            memory,
+            arenas: arenasForAi,
+          };
+
+          const decisions = await decideTradesForAllArenas(multiInput);
+
+          for (let i = 0; i < list.length; i++) {
+            const ctx = list[i];
+            const modelDecision = decisions[i] ?? {
+              action: "HOLD" as const,
+              sizePct: 0,
+              confidence: 0,
+              reason: "model_error",
+            };
+            const finalDecision = applyGuardrails({
+              snapshot: {
+                tick: ctx.snapshot.tick,
+                price: ctx.snapshot.price,
+                events_1h: ctx.snapshot.events_1h,
+                volume_mon_1h: ctx.snapshot.volume_mon_1h,
+              },
+              portfolio: {
+                cashMon: ctx.portfolio.cashMon,
+                tokenUnits: ctx.portfolio.tokenUnits,
+                tradesThisWindow: ctx.portfolio.tradesThisWindow,
+                lastTradeTick: ctx.portfolio.lastTradeTick,
+              },
+              profileConfig: ctx.profileConfig,
+              modelDecision,
+            });
+            await executeDecisionForAgentArena(deps, ctx, finalDecision);
+          }
+
+          if (deps.memoryService !== undefined) {
+            try {
+              await deps.memoryService.updateMemory(list[0].agent.id, list[0].snapshot.tick);
+            } catch (err) {
+              console.warn(`[arenaEngine] Failed to update persona memory for agent ${list[0].agent.id}:`, err);
+            }
+          }
+        } catch (error_) {
+          console.error(`[arenaEngine] agent ${list[0].agent.id} multi-arena failed:`, error_);
+        }
+      }
+
+      // Leaderboard snapshots per arena — only agents who paid for this epoch
       for (const arena of arenas) {
         try {
           const snapshot = deps.marketStore.get(arena.tokenAddress);
-          if (!snapshot) {
-            if (DEBUG) {
-              console.log(
-                `[arenaEngine] arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) no market snapshot, skip (is token in ARENA_TOKENS?)`,
-              );
-            }
-            continue;
-          }
-          if (DEBUG) {
-            console.log(
-              `[arenaEngine] processing arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) ${arena.arenaRegistrations.length} agent(s)`,
-            );
-          }
-          for (const reg of arena.arenaRegistrations) {
-            try {
-              await processOneAgent(deps, arena, snapshot, reg);
-            } catch (error_) {
-              console.error(
-                `[arenaEngine] agent ${reg.agentId} arena ${arena.id} failed:`,
-                error_,
-              );
-            }
-          }
+          if (!snapshot) continue;
 
-          const activeAgentIds = arena.arenaRegistrations.map((r) => r.agentId);
           const currentEpoch = await getCurrentEpoch(
             { prisma: deps.prisma },
             arena.id
           );
           const epochId = currentEpoch?.id ?? null;
+
+          // Only include agents who have renewed (paid) for the current epoch
+          const activeInArena = new Set(
+            arena.arenaRegistrations.map((r) => r.agentId)
+          );
+          const renewedAgentIds =
+            epochId != null
+              ? (
+                  await deps.prisma.epochRegistration.findMany({
+                    where: { epochId },
+                    select: { agentId: true },
+                  })
+                ).map((r) => r.agentId).filter((id) => activeInArena.has(id))
+              : [...activeInArena];
+          const activeAgentIds = renewedAgentIds;
 
           const portfoliosForArena = await deps.prisma.portfolio.findMany({
             where: {
@@ -596,8 +693,10 @@ export function startArenaEngine(deps: ArenaEngineDeps): { stop: () => void } {
             const vol = volByAgent.get(p.agent.id) ?? 0;
             const trades = tradesByAgent.get(p.agent.id) ?? 0;
             const normVol = maxVol > 0 ? vol / maxVol : 0;
-            const normPnl = Math.max(0, Math.min(1, (pnl + 50) / 100));
             const normTrades = maxTrades > 0 ? trades / maxTrades : 0;
+            // Only use PnL for points when the agent had activity this epoch; otherwise neutral (0.5) so no-activity agents tie
+            const rawNormPnl = Math.max(0, Math.min(1, (pnl + 50) / 100));
+            const normPnl = vol === 0 && trades === 0 ? 0.5 : rawNormPnl;
             const points =
               0.5 * normVol + 0.35 * normPnl + 0.15 * normTrades;
             return {

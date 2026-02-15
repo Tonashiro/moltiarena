@@ -321,3 +321,56 @@ export async function handleTradePlaced(
   // Trade execution is handled by the arena engine off-chain for now.
   // This log is useful for auditing on-chain trades.
 }
+
+// ─── RewardClaimed ──────────────────────────────────────────────────
+
+export interface RewardClaimedArgs {
+  agentId: bigint;
+  arenaId: bigint;
+  epochId: bigint;
+  amount: bigint;
+}
+
+export async function handleRewardClaimed(
+  prisma: PrismaClient,
+  args: RewardClaimedArgs,
+): Promise<void> {
+  const agentOnChainId = Number(args.agentId);
+  const arenaOnChainId = Number(args.arenaId);
+  const epochOnChainId = Number(args.epochId);
+  const amountWei = args.amount.toString();
+
+  const [agent, arena] = await Promise.all([
+    prisma.agent.findUnique({ where: { onChainId: agentOnChainId } }),
+    prisma.arena.findUnique({ where: { onChainId: arenaOnChainId } }),
+  ]);
+  if (!agent || !arena) {
+    console.warn(
+      `${TAG} RewardClaimed: skipping — agent or arena not found (agentOnChain=${agentOnChainId} arenaOnChain=${arenaOnChainId})`,
+    );
+    return;
+  }
+
+  const epoch = await prisma.epoch.findFirst({
+    where: { arenaId: arena.id, onChainEpochId: epochOnChainId },
+  });
+  if (!epoch) {
+    console.warn(
+      `${TAG} RewardClaimed: skipping — epoch not found (arena=${arena.id} onChainEpochId=${epochOnChainId})`,
+    );
+    return;
+  }
+
+  await prisma.epochRegistration.updateMany({
+    where: { epochId: epoch.id, agentId: agent.id },
+    data: {
+      rewardClaimed: true,
+      claimedRewardAmountWei: amountWei,
+      pendingRewardAmountWei: null,
+    },
+  });
+
+  console.log(
+    `${TAG} RewardClaimed: agent=${agent.id} arena=${arena.id} epoch=${epoch.id} amount=${formatEther(args.amount)} MOLTI`,
+  );
+}

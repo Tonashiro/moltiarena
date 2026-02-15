@@ -3,7 +3,7 @@
 /**
  * Custom hooks for interacting with MoltiArena smart contracts.
  * Wraps wagmi's useWriteContract + useWaitForTransactionReceipt.
- * All calls explicitly target monadTestnet.id to avoid sending tx to wrong chain.
+ * All calls explicitly target the chain ID from the environment variables to avoid sending tx to wrong chain.
  */
 import { useCallback, useState } from "react";
 import {
@@ -16,7 +16,6 @@ import {
   useSendTransaction,
 } from "wagmi";
 import { type Hex, parseEther } from "viem";
-import { monadTestnet } from "../../wagmi/config";
 import {
   MOLTI_TOKEN_ABI,
   MOLTI_TOKEN_ADDRESS,
@@ -32,7 +31,7 @@ import {
   extractTxError,
 } from "../toast";
 
-const CHAIN_ID = monadTestnet.id;
+const CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID);
 
 // ─── Read hooks ──────────────────────────────────────────────────────
 
@@ -59,7 +58,9 @@ export function useMoltiBalance(address: `0x${string}` | undefined) {
 }
 
 /** Read MOLTI balance for any address (e.g. agent smart account). */
-export function useSmartAccountMoltiBalance(address: string | null | undefined) {
+export function useSmartAccountMoltiBalance(
+  address: string | null | undefined,
+) {
   const addr = address as `0x${string}` | undefined;
   return useReadContract({
     address: MOLTI_TOKEN_ADDRESS,
@@ -105,7 +106,14 @@ export function useMoltiAllowance(owner: `0x${string}` | undefined) {
 
 // ─── Write hooks ─────────────────────────────────────────────────────
 
-export type TxStatus = "idle" | "approving" | "confirming-approval" | "writing" | "confirming" | "success" | "error";
+export type TxStatus =
+  | "idle"
+  | "approving"
+  | "confirming-approval"
+  | "writing"
+  | "confirming"
+  | "success"
+  | "error";
 
 /**
  * Hook to approve MOLTI tokens and then call createAgent on the contract.
@@ -121,7 +129,11 @@ export function useCreateAgentOnChain() {
   const [agentId, setAgentId] = useState<bigint | undefined>();
 
   const createAgent = useCallback(
-    async (profileHash: `0x${string}`, walletAddress: `0x${string}`, creationFee: bigint) => {
+    async (
+      profileHash: `0x${string}`,
+      walletAddress: `0x${string}`,
+      creationFee: bigint,
+    ) => {
       if (!address) {
         toastError("Connect your wallet first");
         return null;
@@ -154,7 +166,10 @@ export function useCreateAgentOnChain() {
         });
 
         setStatus("confirming-approval");
-        toastUpdateSuccess(approvalToast, "Approval submitted, waiting for confirmation...");
+        toastUpdateSuccess(
+          approvalToast,
+          "Approval submitted, waiting for confirmation...",
+        );
 
         // Wait for approval confirmation
         const { waitForTransactionReceipt } = await import("wagmi/actions");
@@ -185,7 +200,10 @@ export function useCreateAgentOnChain() {
 
         setTxHash(hash);
         setStatus("confirming");
-        toastUpdateSuccess(createToast, "Transaction submitted, waiting for confirmation...");
+        toastUpdateSuccess(
+          createToast,
+          "Transaction submitted, waiting for confirmation...",
+        );
 
         // Wait for confirmation and get agent ID from logs
         const { waitForTransactionReceipt } = await import("wagmi/actions");
@@ -424,7 +442,9 @@ export function useFundAgent() {
         }
       }
 
-      const pendingToast = toastPending("Transferring MOLTI to agent wallet...");
+      const pendingToast = toastPending(
+        "Transferring MOLTI to agent wallet...",
+      );
       try {
         setStatus("writing");
         const hash = await writeContractAsync({
@@ -554,6 +574,86 @@ export function useFundAgentMon() {
 
   return {
     fund,
+    status,
+    txHash,
+    isLoading: status !== "idle" && status !== "success" && status !== "error",
+  };
+}
+
+// ─── Claim reward (owner calls; reward is sent to msg.sender) ─────────
+
+export function useClaimReward() {
+  const { address } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const { switchChainAsync } = useSwitchChain();
+  const chainId = useChainId();
+  const [status, setStatus] = useState<TxStatus>("idle");
+  const [txHash, setTxHash] = useState<Hex | undefined>();
+
+  const claim = useCallback(
+    async (
+      agentOnChainId: number,
+      arenaOnChainId: number,
+      epochOnChainId: number,
+    ) => {
+      if (!address) {
+        toastError("Connect your wallet first");
+        return null;
+      }
+
+      if (chainId !== CHAIN_ID) {
+        try {
+          await switchChainAsync({ chainId: CHAIN_ID });
+        } catch {
+          toastError("Please switch to Monad Testnet to continue");
+          return null;
+        }
+      }
+
+      const pendingToast = toastPending("Claiming reward...");
+      try {
+        setStatus("writing");
+        const hash = await writeContractAsync({
+          address: MOLTI_ARENA_ADDRESS,
+          abi: MOLTI_ARENA_ABI,
+          functionName: "claimReward",
+          args: [
+            BigInt(agentOnChainId),
+            BigInt(arenaOnChainId),
+            BigInt(epochOnChainId),
+          ],
+          chainId: CHAIN_ID,
+        });
+
+        setTxHash(hash);
+        setStatus("confirming");
+        toastUpdateSuccess(
+          pendingToast,
+          "Transaction submitted, confirming...",
+        );
+
+        const { waitForTransactionReceipt } = await import("wagmi/actions");
+        const { config } = await import("../../wagmi/config");
+        await waitForTransactionReceipt(config, {
+          hash,
+          confirmations: 1,
+        });
+
+        setStatus("success");
+        toastUpdateSuccess(pendingToast, "Reward claimed!");
+        toastTx(hash, "Reward claimed");
+        return { txHash: hash };
+      } catch (err) {
+        setStatus("error");
+        toastUpdateError(pendingToast, extractTxError(err));
+        return null;
+      }
+    },
+    [address, writeContractAsync, switchChainAsync, chainId],
+  );
+
+  return {
+    claim,
     status,
     txHash,
     isLoading: status !== "idle" && status !== "success" && status !== "error",

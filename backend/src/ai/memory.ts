@@ -9,106 +9,87 @@ const openai = new OpenAI({
 });
 
 const model = process.env.OPENAI_MODEL ?? "gpt-5-mini";
-const OPENAI_TIMEOUT_MS = 30000; // 30 seconds
 
 export interface AgentMemoryService {
   /**
-   * Get memory summary for an agent in a specific arena.
+   * Get the agent's persona memory (evolving summary of actions and results across all arenas).
    * Returns empty string if no memory exists yet.
+   */
+  getMemory(agentId: number): Promise<string>;
+
+  /**
+   * Backward-compat: same as getMemory(agentId). Arena is ignored; persona is agent-level.
    */
   getMemory(agentId: number, arenaId: number): Promise<string>;
 
   /**
-   * Update memory for an agent based on recent trades and performance.
-   * Generates a concise summary of the agent's trading history and patterns.
+   * Update the agent's persona memory based on recent trades and performance across all arenas.
+   * Call once per agent per tick after processing all arenas.
    */
-  updateMemory(
-    agentId: number,
-    arenaId: number,
-    tick: number,
-    recentTrades: Array<{
-      tick: number;
-      action: string;
-      sizePct: number;
-      price: number;
-      reason: string;
-      pnlAfter?: number;
-    }>,
-    currentPnL: number,
-    totalTrades: number
-  ): Promise<void>;
+  updateMemory(agentId: number, tick: number): Promise<void>;
 
   /**
-   * AI-powered memory summarization that analyzes all agent data
-   * and generates a comprehensive memory summary.
-   * Should be called periodically (e.g., every 6 hours).
+   * AI-powered persona summarization: analyzes all agent data across arenas
+   * and generates one evolving memory summary. Call periodically (e.g. every 6h).
    */
   summarizeWithAI(
     agentId: number,
-    arenaId: number,
     agentName: string,
     agentProfile: unknown
   ): Promise<void>;
 }
 
 /**
- * Creates a memory service that stores and retrieves agent memory summaries.
- * Memory is stored per agent per arena to maintain independent contexts.
+ * Creates a memory service. Memory is stored per agent (persona), not per arena.
+ * The persona evolves from the agent's actions and results across all arenas.
  */
 export function createMemoryService(
   prisma: PrismaClient
 ): AgentMemoryService {
   return {
-    async getMemory(agentId: number, arenaId: number): Promise<string> {
+    async getMemory(agentId: number, _arenaId?: number): Promise<string> {
       try {
-        const memory = await prisma.agentMemory.findUnique({
-          where: {
-            agentId_arenaId: { agentId, arenaId },
-          },
+        const memory = await prisma.agentPersonaMemory.findUnique({
+          where: { agentId },
         });
         return memory?.memoryText ?? "";
       } catch (error) {
-        console.error(
-          `[memory] Failed to get memory for agent ${agentId} arena ${arenaId}:`,
-          error
-        );
+        console.error(`[memory] Failed to get persona memory for agent ${agentId}:`, error);
         return "";
       }
     },
 
-    async updateMemory(
-      agentId: number,
-      arenaId: number,
-      tick: number,
-      recentTrades: Array<{
-        tick: number;
-        action: string;
-        sizePct: number;
-        price: number;
-        reason: string;
-        pnlAfter?: number;
-      }>,
-      currentPnL: number,
-      totalTrades: number
-    ): Promise<void> {
+    async updateMemory(agentId: number, tick: number): Promise<void> {
       try {
-        // Generate memory summary from recent trades
-        // Keep it concise to save tokens (max ~200 words)
+        // Load recent trades across all arenas (last 30 by tick desc)
+        const recentTrades = await prisma.trade.findMany({
+          where: { agentId },
+          orderBy: { tick: "desc" },
+          take: 30,
+          include: { arena: { select: { id: true, name: true, tokenAddress: true } } },
+        });
+        const reversed = [...recentTrades].reverse();
+
+        // Load current portfolios for this agent (all arenas) for PnL context
+        const portfolios = await prisma.portfolio.findMany({
+          where: { agentId },
+          orderBy: { updatedAt: "desc" },
+          include: { arena: { select: { id: true, name: true } } },
+        });
+
+        const totalTrades = await prisma.trade.count({ where: { agentId } });
+
         const memoryParts: string[] = [];
 
-        if (recentTrades.length > 0) {
-          // Analyze recent trading patterns
-          const buyCount = recentTrades.filter((t) => t.action === "BUY").length;
-          const sellCount = recentTrades.filter((t) => t.action === "SELL").length;
-          const holdCount = recentTrades.filter((t) => t.action === "HOLD").length;
-
+        if (reversed.length > 0) {
+          const buyCount = reversed.filter((t) => t.action === "BUY").length;
+          const sellCount = reversed.filter((t) => t.action === "SELL").length;
           memoryParts.push(
-            `Recent activity: ${buyCount} buys, ${sellCount} sells, ${holdCount} holds.`
+            `Recent activity across arenas: ${buyCount} buys, ${sellCount} sells.`
           );
 
-          // Identify patterns
-          if (recentTrades.length >= 3) {
-            const last3 = recentTrades.slice(-3);
+          if (reversed.length >= 3) {
+            const last3 = reversed.slice(-3);
             const allSame = last3.every((t) => t.action === last3[0]!.action);
             if (allSame) {
               memoryParts.push(
@@ -117,17 +98,21 @@ export function createMemoryService(
             }
           }
 
-          // Performance summary
-          if (currentPnL > 0) {
-            memoryParts.push(`Current PnL: +${currentPnL.toFixed(2)}%.`);
-          } else if (currentPnL < 0) {
-            memoryParts.push(`Current PnL: ${currentPnL.toFixed(2)}%.`);
+          // Per-arena PnL hint from portfolios (equity vs initial)
+          const pnlParts: string[] = [];
+          for (const p of portfolios) {
+            if (p.initialCapital != null && p.initialCapital > 0) {
+              const equity = p.cashMon + p.tokenUnits * (p.avgEntryPrice ?? 0);
+              const pnl = ((equity - p.initialCapital) / p.initialCapital) * 100;
+              const label = p.arena?.name ?? `arena ${p.arenaId}`;
+              pnlParts.push(`${label}: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%`);
+            }
+          }
+          if (pnlParts.length > 0) {
+            memoryParts.push(`Performance: ${pnlParts.join("; ")}.`);
           }
 
-          // Common reasons (to identify strategy patterns)
-          const reasons = recentTrades
-            .map((t) => t.reason.toLowerCase())
-            .join(" ");
+          const reasons = reversed.map((t) => t.reason.toLowerCase()).join(" ");
           if (reasons.includes("momentum") || reasons.includes("trend")) {
             memoryParts.push("Strategy: momentum-focused.");
           }
@@ -138,10 +123,8 @@ export function createMemoryService(
             memoryParts.push("Strategy: whale-activity responsive.");
           }
 
-          // Average trade size
           const avgSize =
-            recentTrades.reduce((sum, t) => sum + t.sizePct, 0) /
-            recentTrades.length;
+            reversed.reduce((sum, t) => sum + t.sizePct, 0) / reversed.length;
           if (avgSize > 0.5) {
             memoryParts.push("Trading style: large positions.");
           } else if (avgSize < 0.2) {
@@ -151,96 +134,56 @@ export function createMemoryService(
           memoryParts.push("No trades yet. Learning phase.");
         }
 
-        // Add total trade count for context
         if (totalTrades > 0) {
-          memoryParts.push(`Total trades: ${totalTrades}.`);
+          memoryParts.push(`Total trades (all arenas): ${totalTrades}.`);
         }
 
-        // Sanitize and limit memory text
-        const memoryText = sanitizeString(
-          memoryParts.join(" "),
-          500 // Max 500 chars
-        );
+        const memoryText = sanitizeString(memoryParts.join(" "), 600);
 
-        // Upsert memory (rule-based update, doesn't change lastAiSummarizedAt)
-        await prisma.agentMemory.upsert({
-          where: {
-            agentId_arenaId: { agentId, arenaId },
-          },
+        await prisma.agentPersonaMemory.upsert({
+          where: { agentId },
           create: {
             agentId,
-            arenaId,
             memoryText,
-            tick,
+            lastUpdatedTick: tick,
           },
           update: {
             memoryText,
-            tick,
-            // Don't update lastAiSummarizedAt - only AI summarization does that
+            lastUpdatedTick: tick,
           },
         });
       } catch (error) {
-        console.error(
-          `[memory] Failed to update memory for agent ${agentId} arena ${arenaId}:`,
-          error
-        );
+        console.error(`[memory] Failed to update persona memory for agent ${agentId}:`, error);
       }
     },
 
     async summarizeWithAI(
       agentId: number,
-      arenaId: number,
       agentName: string,
       agentProfile: unknown
     ): Promise<void> {
       try {
-        // Gather comprehensive agent data
-        const [trades, portfolio, leaderboardSnapshots] = await Promise.all([
-          // All trades for this agent in this arena
+        const [trades, portfolios] = await Promise.all([
           prisma.trade.findMany({
-            where: { agentId, arenaId },
+            where: { agentId },
             orderBy: { tick: "asc" },
+            include: { arena: { select: { id: true, name: true } } },
           }),
-          // Current portfolio state (latest by updatedAt)
-          prisma.portfolio.findFirst({
-            where: { agentId, arenaId },
+          prisma.portfolio.findMany({
+            where: { agentId },
             orderBy: { updatedAt: "desc" },
-          }),
-          // Recent leaderboard snapshots to track performance over time
-          prisma.leaderboardSnapshot.findMany({
-            where: { arenaId },
-            orderBy: { tick: "desc" },
-            take: 20, // Last 20 snapshots
+            include: { arena: { select: { id: true, name: true } } },
           }),
         ]);
 
         if (trades.length === 0) {
-          // No trades yet, skip AI summarization
           return;
         }
 
-        // Calculate performance metrics
         const buyTrades = trades.filter((t) => t.action === "BUY");
         const sellTrades = trades.filter((t) => t.action === "SELL");
-        const holdTrades = trades.filter((t) => t.action === "HOLD");
 
-        // Get current PnL from latest leaderboard
-        let currentPnL = 0;
-        if (leaderboardSnapshots.length > 0) {
-          const latest = leaderboardSnapshots[0]!;
-          const rankings = latest.rankingsJson as Array<{
-            agentId: number;
-            pnlPct: number;
-          }>;
-          const entry = rankings.find((r) => r.agentId === agentId);
-          if (entry) {
-            currentPnL = entry.pnlPct;
-          }
-        }
-
-        // Calculate win rate (simplified: profitable sells)
-        const profitableSells = sellTrades.filter((sell, idx) => {
-          // Find the buy that preceded this sell
+        const profitableSells = sellTrades.filter((sell) => {
           const buyBefore = buyTrades
             .filter((b) => b.tick < sell.tick)
             .sort((a, b) => b.tick - a.tick)[0];
@@ -252,13 +195,25 @@ export function createMemoryService(
             ? (profitableSells.length / sellTrades.length) * 100
             : 0;
 
-        // Average trade size
         const avgTradeSize =
           trades.length > 0
             ? trades.reduce((sum, t) => sum + t.sizePct, 0) / trades.length
             : 0;
 
-        // Build comprehensive data for AI analysis
+        const perArenaStats = portfolios.map((p) => {
+          const equity = p.cashMon + p.tokenUnits * (p.avgEntryPrice ?? 0);
+          const pnl =
+            p.initialCapital != null && p.initialCapital > 0
+              ? ((equity - p.initialCapital) / p.initialCapital) * 100
+              : 0;
+          return {
+            arena: p.arena?.name ?? `arena ${p.arenaId}`,
+            cashMon: Math.round(p.cashMon * 100) / 100,
+            tokenUnits: Math.round(p.tokenUnits * 100) / 100,
+            pnlPct: Math.round(pnl * 100) / 100,
+          };
+        });
+
         const agentData = {
           name: agentName,
           profile: agentProfile,
@@ -266,47 +221,37 @@ export function createMemoryService(
             totalTrades: trades.length,
             buys: buyTrades.length,
             sells: sellTrades.length,
-            holds: holdTrades.length,
             winRate: Math.round(winRate * 100) / 100,
             avgTradeSize: Math.round(avgTradeSize * 1000) / 1000,
-            currentPnL: Math.round(currentPnL * 100) / 100,
           },
-          recentTrades: trades.slice(-20).map((t) => ({
+          perArena: perArenaStats,
+          recentTrades: trades.slice(-25).map((t) => ({
+            arenaId: t.arenaId,
             tick: t.tick,
             action: t.action,
             sizePct: Math.round(t.sizePct * 1000) / 1000,
             price: Math.round(t.price * 1000000) / 1000000,
             reason: t.reason,
           })),
-          portfolio: portfolio
-            ? {
-                cashMon: Math.round(portfolio.cashMon * 100) / 100,
-                tokenUnits: Math.round(portfolio.tokenUnits * 100) / 100,
-                avgEntryPrice: portfolio.avgEntryPrice
-                  ? Math.round(portfolio.avgEntryPrice * 1000000) / 1000000
-                  : null,
-              }
-            : null,
         };
 
-        // AI prompt for memory summarization
-        const systemPrompt = `You are analyzing a trading agent's performance to generate a concise memory summary (max 300 words) that will help the agent learn and improve.
+        const systemPrompt = `You are analyzing a trading agent's performance across multiple arenas to generate a concise persona memory (max 300 words).
+
+This memory will be reused by the agent in all arenas to evolve its "persona": style, what worked, what to avoid, and how it reacts to results.
 
 Focus on:
-1. What strategies/patterns worked well
-2. What mistakes or patterns to avoid
-3. Key insights about the agent's trading style
-4. Recommendations for future decisions
-
-Be specific and actionable. Use the agent's profile to understand their goals.`;
+1. Cross-arena patterns (e.g. strong in volatile arenas, cautious elsewhere)
+2. What strategies/patterns worked or failed
+3. Actionable insights and recommendations for future decisions
+4. A consistent persona that improves with experience`;
 
         const userPrompt = `Agent: ${agentName}
 Profile: ${JSON.stringify(agentProfile)}
 Stats: ${JSON.stringify(agentData.stats)}
-Recent Trades (last 20): ${JSON.stringify(agentData.recentTrades)}
-Current Portfolio: ${JSON.stringify(agentData.portfolio)}
+Per-arena state: ${JSON.stringify(agentData.perArena)}
+Recent Trades (last 25, any arena): ${JSON.stringify(agentData.recentTrades)}
 
-Generate a concise memory summary that will help this agent make better decisions. Focus on actionable insights and patterns.`;
+Generate a concise persona memory that will help this agent make better decisions across all arenas. Focus on one evolving persona, not per-arena.`;
 
         const completion = await openai.chat.completions.create({
           model,
@@ -314,32 +259,24 @@ Generate a concise memory summary that will help this agent make better decision
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
           ],
-          max_completion_tokens: 1024, // Enough for reasoning + 400-word summary
-          reasoning_effort: "low", // Keep reasoning minimal for this summarization task
+          max_completion_tokens: 1024,
+          reasoning_effort: "low",
         });
 
         const rawMemoryText = completion.choices[0]?.message?.content?.trim() ?? "";
-
         if (!rawMemoryText) {
-          console.warn(
-            `[memory] AI summarization returned empty for agent ${agentId} arena ${arenaId}`
-          );
+          console.warn(`[memory] AI persona summarization returned empty for agent ${agentId}`);
           return;
         }
 
-        // Sanitize and truncate to max 1000 chars to save tokens in future prompts
         const truncatedMemory = sanitizeString(rawMemoryText, 1000);
 
-        // Update memory with AI-generated summary
-        await prisma.agentMemory.upsert({
-          where: {
-            agentId_arenaId: { agentId, arenaId },
-          },
+        await prisma.agentPersonaMemory.upsert({
+          where: { agentId },
           create: {
             agentId,
-            arenaId,
             memoryText: truncatedMemory,
-            tick: trades[trades.length - 1]?.tick ?? 0,
+            lastUpdatedTick: trades[trades.length - 1]?.tick ?? null,
             lastAiSummarizedAt: new Date(),
           },
           update: {
@@ -348,14 +285,9 @@ Generate a concise memory summary that will help this agent make better decision
           },
         });
 
-        console.log(
-          `[memory] AI summarization completed for agent ${agentId} arena ${arenaId}`
-        );
+        console.log(`[memory] AI persona summarization completed for agent ${agentId}`);
       } catch (error) {
-        console.error(
-          `[memory] Failed to summarize with AI for agent ${agentId} arena ${arenaId}:`,
-          error
-        );
+        console.error(`[memory] Failed to summarize persona for agent ${agentId}:`, error);
       }
     },
   };

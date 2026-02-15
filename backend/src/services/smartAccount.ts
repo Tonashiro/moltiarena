@@ -8,7 +8,6 @@
  * Infrastructure: Pimlico bundler on Monad Testnet (chain 10143)
  */
 import {
-  createPublicClient,
   http,
   maxUint256,
   type Hex,
@@ -21,46 +20,34 @@ import { toSimpleSmartAccount } from "permissionless/accounts";
 import { createSmartAccountClient } from "permissionless";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { encryptPrivateKey, decryptPrivateKey } from "./keyVault.js";
+import { chain, CHAIN_ID, getPublicClient as getSharedPublicClient } from "../chains.js";
 import { MOLTI_TOKEN_ADDRESS, MOLTI_TOKEN_ABI, MOLTI_ARENA_ADDRESS, MOLTI_ARENA_ABI } from "../contracts/abis.js";
 
 // ─── Configuration ────────────────────────────────────────────────────
 
-const MONAD_TESTNET_CHAIN_ID = 10143;
-const MONAD_TESTNET_RPC = process.env.INDEXER_RPC_URL ?? "https://testnet-rpc.monad.xyz";
+let _pimlicoRateLimitWarned = false;
 
 function getPimlicoUrl(): string {
   const apiKey = process.env.PIMLICO_API_KEY;
   if (apiKey) {
-    return `https://api.pimlico.io/v2/${MONAD_TESTNET_CHAIN_ID}/rpc?apikey=${apiKey}`;
+    return `https://api.pimlico.io/v2/${CHAIN_ID}/rpc?apikey=${apiKey}`;
   }
-  // Public endpoint: 20 req/min rate limit
-  return `https://public.pimlico.io/v2/${MONAD_TESTNET_CHAIN_ID}/rpc`;
+  if (!_pimlicoRateLimitWarned) {
+    _pimlicoRateLimitWarned = true;
+    console.warn(
+      "[smartAccount] PIMLICO_API_KEY not set — using public bundler (≈20 req/min). " +
+        "Set PIMLICO_API_KEY in .env to avoid rate limits: https://dashboard.pimlico.io"
+    );
+  }
+  return `https://public.pimlico.io/v2/${CHAIN_ID}/rpc`;
 }
-
-// Monad Testnet chain definition for viem
-const monadTestnet = {
-  id: MONAD_TESTNET_CHAIN_ID,
-  name: "Monad Testnet",
-  nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-  rpcUrls: {
-    default: { http: [MONAD_TESTNET_RPC] },
-  },
-  blockExplorers: {
-    default: { name: "Monad Explorer", url: "https://testnet.monadexplorer.com" },
-  },
-} as const;
 
 // ─── Shared clients (lazy init) ───────────────────────────────────────
 
-let _publicClient: ReturnType<typeof createPublicClient> | null = null;
 let _pimlicoClient: ReturnType<typeof createPimlicoClient> | null = null;
 
 function getPublicClient() {
-  _publicClient ??= createPublicClient({
-    chain: monadTestnet,
-    transport: http(MONAD_TESTNET_RPC),
-  });
-  return _publicClient;
+  return getSharedPublicClient();
 }
 
 function getPimlicoClient() {
@@ -135,7 +122,7 @@ export async function getSmartAccountClient(encryptedSignerKey: string) {
 
   const client = createSmartAccountClient({
     account: simpleAccount,
-    chain: monadTestnet,
+    chain,
     bundlerTransport: http(getPimlicoUrl()),
     // No paymaster — agent pays gas from its own MON balance (funded via "Fund MON")
     // Paymaster requires Pimlico sponsorship policy ID, which needs a paid plan
@@ -274,7 +261,19 @@ export async function approveMoltiForArena(params: {
     console.log(`[smartAccount] MOLTI approved for MoltiArena tx=${txHash}`);
     return txHash;
   } catch (err) {
-    console.error(`[smartAccount] approveMoltiForArena FAILED:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    const is429 =
+      msg.includes("rate limit") ||
+      msg.includes("429") ||
+      (err as { cause?: { status?: number } })?.cause?.status === 429;
+    if (is429) {
+      console.error(
+        "[smartAccount] approveMoltiForArena FAILED: Pimlico rate limit (429). " +
+          "Set PIMLICO_API_KEY in .env (https://dashboard.pimlico.io) or wait ~60s and retry."
+      );
+    } else {
+      console.error(`[smartAccount] approveMoltiForArena FAILED:`, err);
+    }
     return null;
   }
 }

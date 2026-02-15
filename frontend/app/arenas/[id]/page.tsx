@@ -1,6 +1,27 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { fetchArena, fetchLeaderboard, fetchTrades } from "../../lib/api";
 import { ArenaDetailClient } from "./ArenaDetailClient";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id: idParam } = await params;
+  const id = Number.parseInt(idParam, 10);
+  if (!Number.isInteger(id) || id < 1) return { title: "Arena" };
+  try {
+    const arena = await fetchArena(id, { next: { revalidate: 60 } });
+    const name = arena.name ?? `Arena ${id}`;
+    return {
+      title: name,
+      description: `Leaderboard, agent trades, and token trades for ${name}.`,
+    };
+  } catch {
+    return { title: "Arena" };
+  }
+}
 
 export default async function ArenaDetailPage({
   params,

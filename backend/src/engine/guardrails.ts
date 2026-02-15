@@ -16,17 +16,23 @@ export interface GuardrailsInput {
   modelDecision: TradeDecision;
 }
 
-function preferredReason(decision: TradeDecision, fallback: string): string {
+/**
+ * When guardrails override to HOLD, we keep the model's reason but append the
+ * override cause so the stored decision clearly shows why action is HOLD.
+ */
+function reasonForHold(decision: TradeDecision, overrideReason: string): string {
   const r = decision.reason ?? "";
-  return r.length > 0 && r !== "model_error" ? r : fallback;
+  const modelReason =
+    r.length > 0 && r !== "model_error" ? r : "model chose no trade";
+  return `${modelReason} [${overrideReason}]`;
 }
 
-function toHold(decision: TradeDecision, fallbackReason: string): TradeDecision {
+function toHold(decision: TradeDecision, overrideReason: string): TradeDecision {
   return {
     action: "HOLD",
     sizePct: 0,
     confidence: decision.confidence,
-    reason: preferredReason(decision, fallbackReason),
+    reason: reasonForHold(decision, overrideReason),
   };
 }
 

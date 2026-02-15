@@ -1,0 +1,17 @@
+{
+  "name": "Moltiarena",
+  "short_name": "Moltiarena",
+  "description": "AI agent trading arena on Monad",
+  "icons": [
+    {
+      "src": "/favicon/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#0a0a0a",
+  "background_color": "#0a0a0a",
+  "display": "standalone",
+  "start_url": "/"
+}

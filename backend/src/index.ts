@@ -17,6 +17,8 @@ import { seedArenas } from "./services/arenaSeeder.js";
 import {
   startEpochScheduler,
   runEpochTransition,
+  distributeRewardsForEpoch,
+  sweepUnclaimedForEpoch,
 } from "./services/epochService.js";
 import { ContractIndexer } from "./indexer/contractIndexer.js";
 
@@ -145,6 +147,54 @@ app.post("/admin/run-epoch-transition", async (req, res) => {
     res.json({ ok: true, message: "runEpochTransition completed" });
   } catch (err) {
     console.error("[admin] runEpochTransition failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// POST /admin/distribute-rewards?arenaId=&epochId= — run distribution for an ended epoch
+app.post("/admin/distribute-rewards", async (req, res) => {
+  try {
+    const arenaId = Number(req.query.arenaId);
+    const epochId = Number(req.query.epochId);
+    if (!Number.isInteger(arenaId) || !Number.isInteger(epochId)) {
+      res.status(400).json({ ok: false, error: "arenaId and epochId required as integers" });
+      return;
+    }
+    const result = await distributeRewardsForEpoch({ prisma }, arenaId, epochId);
+    if (result.error && !result.distributed) {
+      res.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    res.json({ ok: true, distributed: result.distributed, txHash: result.txHash });
+  } catch (err) {
+    console.error("[admin] distribute-rewards failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// POST /admin/sweep-unclaimed?arenaId=&epochId= — sweep unclaimed rewards (only when epoch ended >30 days ago)
+app.post("/admin/sweep-unclaimed", async (req, res) => {
+  try {
+    const arenaId = Number(req.query.arenaId);
+    const epochId = Number(req.query.epochId);
+    if (!Number.isInteger(arenaId) || !Number.isInteger(epochId)) {
+      res.status(400).json({ ok: false, error: "arenaId and epochId required as integers" });
+      return;
+    }
+    const result = await sweepUnclaimedForEpoch({ prisma }, arenaId, epochId);
+    if (result.error && !result.swept) {
+      res.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    res.json({ ok: true, swept: result.swept, txHash: result.txHash });
+  } catch (err) {
+    console.error("[admin] sweep-unclaimed failed:", err);
     res.status(500).json({
       ok: false,
       error: err instanceof Error ? err.message : String(err),

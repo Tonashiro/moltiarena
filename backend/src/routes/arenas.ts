@@ -91,33 +91,73 @@ router.get("/:arenaId/leaderboard", async (req: Request, res: Response): Promise
         points?: number;
         rank?: number;
       }>;
+      let rewardPoolDistributed: string | null = null;
+      const rewardByAgent = new Map<number, string>();
+      if (epochId != null) {
+        const regs = await prisma.epochRegistration.findMany({
+          where: { epochId, pendingRewardAmountWei: { not: null } },
+          select: { agentId: true, pendingRewardAmountWei: true },
+        });
+        let total = BigInt(0);
+        for (const r of regs) {
+          if (r.pendingRewardAmountWei) {
+            rewardByAgent.set(r.agentId, r.pendingRewardAmountWei);
+            total += BigInt(r.pendingRewardAmountWei);
+          }
+        }
+        rewardPoolDistributed = total > BigInt(0) ? total.toString() : null;
+      }
+      // Normalize points when no activity: 0 vol + 0 trades => 0.175 (displays as 17.5) so all such agents tie
+      const withReward = (r: (typeof rankings)[0]) => rewardByAgent.get(r.agentId) ?? null;
+      const normalizedRankings = rankings
+        .map((r) => {
+          const vol = r.volumeTraded ?? 0;
+          const trades = r.tradeCount ?? 0;
+          const points = vol === 0 && trades === 0 ? 0.175 : (r.points ?? 0);
+          return {
+            agentId: r.agentId,
+            name: r.name,
+            pnlPct: r.pnlPct,
+            equity: r.equity,
+            cashMon: r.cashMon,
+            tokenUnits: r.tokenUnits,
+            initialCapital: r.initialCapital ?? 0,
+            volumeTraded: vol,
+            tradeCount: trades,
+            points,
+            rewardAmountWei: withReward(r),
+          };
+        })
+        .sort((a, b) => b.points - a.points || a.agentId - b.agentId);
       res.json({
         arenaId,
         epochId,
         epochEndAt,
         tick: latest.tick,
         createdAt: latest.createdAt,
-        rankings: rankings.map((r) => ({
-          agentId: r.agentId,
-          name: r.name,
-          pnlPct: r.pnlPct,
-          equity: r.equity,
-          cashMon: r.cashMon,
-          tokenUnits: r.tokenUnits,
-          initialCapital: r.initialCapital ?? 0,
-          volumeTraded: r.volumeTraded ?? 0,
-          tradeCount: r.tradeCount ?? 0,
-          points: r.points ?? 0,
-          rank: r.rank ?? 0,
-        })),
+        rewardPoolDistributed,
+        rankings: normalizedRankings.map((r, i) => ({ ...r, rank: i + 1 })),
       });
       return;
     }
 
     // No snapshot yet — build rankings from registered agents' portfolios
-    // so agents appear immediately after registration
+    // Only include agents who paid for this epoch when epochId is set
+    const agentIdFilter =
+      epochId != null
+        ? {
+            agentId: {
+              in: (
+                await prisma.epochRegistration.findMany({
+                  where: { epochId },
+                  select: { agentId: true },
+                })
+              ).map((r) => r.agentId),
+            },
+          }
+        : {};
     const portfolios = await prisma.portfolio.findMany({
-      where: { arenaId },
+      where: { arenaId, ...agentIdFilter },
       include: {
         agent: {
           select: { id: true, name: true },
@@ -128,11 +168,12 @@ router.get("/:arenaId/leaderboard", async (req: Request, res: Response): Promise
 
     const fallbackRankings = portfolios.map((p) => {
       // Without a market price snapshot we can only use cash as equity approximation.
-      // Token units have unknown value without price, so just use cash + tokenUnits * 0 (no price available).
-      const eq = p.cashMon; // Best we can do without market price
+      const eq = p.cashMon;
       const pnl = p.initialCapital > 0
         ? ((eq - p.initialCapital) / p.initialCapital) * 100
         : 0;
+      // No snapshot = no activity; use neutral points (0.175) so everyone shows 17.5 (same as engine when 0 vol/trades).
+      const points = 0.175;
       return {
         agentId: p.agent.id,
         name: p.agent.name,
@@ -141,8 +182,11 @@ router.get("/:arenaId/leaderboard", async (req: Request, res: Response): Promise
         cashMon: p.cashMon,
         tokenUnits: p.tokenUnits,
         initialCapital: p.initialCapital,
+        points,
       };
     });
+
+    fallbackRankings.sort((a, b) => b.points - a.points);
 
     res.json({
       arenaId,
@@ -150,16 +194,63 @@ router.get("/:arenaId/leaderboard", async (req: Request, res: Response): Promise
       epochEndAt,
       tick: null,
       createdAt: null,
+      rewardPoolDistributed: null,
       rankings: fallbackRankings.map((r, i) => ({
         ...r,
         volumeTraded: 0,
         tradeCount: 0,
-        points: r.pnlPct,
+        points: r.points,
         rank: i + 1,
+        rewardAmountWei: null,
       })),
     });
   } catch (e) {
     handleRouteError(e, res, "GET /arenas/:arenaId/leaderboard");
+  }
+});
+
+// GET /arenas/:arenaId/epochs — list past/current epochs for an arena
+router.get("/:arenaId/epochs", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const arenaId = parseId(req.params.arenaId, "arenaId", res);
+    if (arenaId === null) return;
+    const arena = await prisma.arena.findUnique({
+      where: { id: arenaId },
+    });
+    if (!arena) {
+      res.status(404).json({ error: "Arena not found" });
+      return;
+    }
+    const epochs = await prisma.epoch.findMany({
+      where: { arenaId },
+      orderBy: { startAt: "desc" },
+      include: {
+        epochRegistrations: {
+          where: { pendingRewardAmountWei: { not: null } },
+          select: { pendingRewardAmountWei: true },
+        },
+      },
+    });
+    const list = epochs.map((e) => {
+      const distributed = e.epochRegistrations.reduce(
+        (sum, r) => sum + (r.pendingRewardAmountWei ? BigInt(r.pendingRewardAmountWei) : BigInt(0)),
+        BigInt(0)
+      );
+      return {
+        id: e.id,
+        onChainEpochId: e.onChainEpochId,
+        startAt: e.startAt,
+        endAt: e.endAt,
+        status: e.status,
+        rewardPoolDistributed: distributed > BigInt(0) ? distributed.toString() : null,
+        rewardsDistributedAt: e.rewardsDistributedAt,
+        distributionTxHash: e.distributionTxHash,
+        rewardsSweptAt: e.rewardsSweptAt,
+      };
+    });
+    res.json({ arenaId, epochs: list });
+  } catch (e) {
+    handleRouteError(e, res, "GET /arenas/:arenaId/epochs");
   }
 });
 

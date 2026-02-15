@@ -226,6 +226,19 @@ export const MOLTI_ARENA_ABI = [
   },
   {
     type: "function",
+    name: "getAgentsInArenaWithRenewal",
+    inputs: [
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+    ],
+    outputs: [
+      { name: "agentIds", type: "uint256[]" },
+      { name: "renewedForEpoch", type: "bool[]" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "isRegistered",
     inputs: [
       { name: "agentId", type: "uint256" },
@@ -470,6 +483,45 @@ export const MOLTI_ARENA_ABI = [
   },
   {
     type: "function",
+    name: "setPendingRewardsBatch",
+    inputs: [
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+      { name: "agentIds", type: "uint256[]" },
+      { name: "amountWeis", type: "uint256[]" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "sweepUnclaimedRewards",
+    inputs: [
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+      { name: "agentIds", type: "uint256[]" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "epochs",
+    inputs: [
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+    ],
+    outputs: [
+      { name: "startTime", type: "uint256" },
+      { name: "endTime", type: "uint256" },
+      { name: "rewardPoolWei", type: "uint256" },
+      { name: "burnedWei", type: "uint256" },
+      { name: "ended", type: "bool" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "claimReward",
     inputs: [
       { name: "agentId", type: "uint256" },
@@ -542,12 +594,32 @@ export const MOLTI_ARENA_ABI = [
       { name: "amount", type: "uint256", indexed: false },
     ],
   },
+  {
+    type: "event",
+    name: "RewardsDistributed",
+    inputs: [
+      { name: "arenaId", type: "uint256", indexed: true },
+      { name: "epochId", type: "uint256", indexed: true },
+      { name: "winnerCount", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "UnclaimedRewardsSwept",
+    inputs: [
+      { name: "arenaId", type: "uint256", indexed: true },
+      { name: "epochId", type: "uint256", indexed: true },
+      { name: "amountBurned", type: "uint256", indexed: false },
+    ],
+  },
   // ── Custom errors (for decoding revert reasons) ──
   { type: "error", name: "AgentNotFound", inputs: [{ name: "agentId", type: "uint256" }] },
   { type: "error", name: "ArenaNotFound", inputs: [{ name: "arenaId", type: "uint256" }] },
   { type: "error", name: "NotRegistered", inputs: [{ name: "agentId", type: "uint256" }, { name: "arenaId", type: "uint256" }] },
   { type: "error", name: "EpochNotFound", inputs: [{ name: "arenaId", type: "uint256" }, { name: "epochId", type: "uint256" }] },
   { type: "error", name: "EpochAlreadyEnded", inputs: [{ name: "arenaId", type: "uint256" }, { name: "epochId", type: "uint256" }] },
+  { type: "error", name: "InvalidBatchLength", inputs: [] },
+  { type: "error", name: "ClaimWindowNotEnded", inputs: [] },
   { type: "error", name: "InsufficientAgentBalance", inputs: [{ name: "required", type: "uint256" }, { name: "available", type: "uint256" }] },
   {
     type: "event",

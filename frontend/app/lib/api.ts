@@ -127,6 +127,8 @@ export interface AgentListItem {
   smartAccountAddress: string | null;
   creationTxHash: string | null;
   fundedBalance: number;
+  /** On-chain MOLTI balance of agent wallet when available */
+  moltiBalance?: number;
   createdAt: string;
   registeredArenaIds: number[];
 }
@@ -361,12 +363,24 @@ export function fetchAgentTrades(
 
 // --- Agent stats ---
 
+export interface PendingRewardItem {
+  epochId: number;
+  arenaId: number;
+  arenaName: string | null;
+  onChainEpochId: number | null;
+  arenaOnChainId: number | null;
+  amount: string;
+  endAt: string;
+}
+
 export interface AgentStatsResponse {
   agentId: number;
   tradeCount: number;
   feesPaid: number;
+  /** Total MOLTI claimed from past epochs (from indexed RewardClaimed events). */
   rewardsCollected: number;
-  pendingRewards: Array<{ epochId: number; arenaId: number; amount: string; endAt: string }>;
+  /** Epochs with claimable reward (amount > 0); includes on-chain IDs for claiming. */
+  pendingRewards: PendingRewardItem[];
 }
 
 export function fetchAgentStats(
@@ -418,18 +432,16 @@ export function fetchAgentDecisions(
   return apiGet<AgentDecisionsResponse>(`/agents/${agentId}/decisions${qs}`, options);
 }
 
-// --- Agent memory ---
+// --- Agent memory (persona: one evolving summary across all arenas) ---
 
 export interface AgentMemoryResponse {
   agentId: number;
-  memories: Array<{
-    arenaId: number;
-    arenaName: string | null;
+  memory: {
     memoryText: string;
-    tick: number;
+    lastUpdatedTick: number | null;
     lastAiSummarizedAt: string | null;
     updatedAt: string;
-  }>;
+  } | null;
 }
 
 export function fetchAgentMemory(

@@ -5,6 +5,7 @@ import { useAgents } from "../lib/queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { formatNumBrute } from "@/app/lib/formatters";
 
 export default function AgentsPage() {
   const { data, isLoading, error } = useAgents();
@@ -19,9 +20,7 @@ export default function AgentsPage() {
         </Button>
       </div>
 
-      {error && (
-        <p className="text-sm text-destructive">{error.message}</p>
-      )}
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {isLoading ? (
         <Card>
@@ -51,24 +50,33 @@ export default function AgentsPage() {
                     <div className="flex items-center gap-3 min-w-0">
                       <span className="font-medium truncate">{agent.name}</span>
                       {agent.onChainId != null && (
-                        <Badge variant="outline" className="text-[10px] shrink-0">
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] shrink-0"
+                        >
                           #{agent.onChainId}
                         </Badge>
                       )}
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
-                      {agent.fundedBalance > 0 && (
-                        <Badge variant="outline" className="text-[10px] font-mono">
-                          {agent.fundedBalance.toLocaleString()} MOLTI
+                      {(agent.moltiBalance ?? agent.fundedBalance) > 0 && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] font-mono"
+                        >
+                          {formatNumBrute(agent.moltiBalance ?? agent.fundedBalance)}{" "}
+                          MOLTI
                         </Badge>
                       )}
                       {agent.registeredArenaIds.length > 0 && (
                         <Badge variant="secondary" className="text-[10px]">
-                          {agent.registeredArenaIds.length} arena{agent.registeredArenaIds.length !== 1 ? "s" : ""}
+                          {agent.registeredArenaIds.length} arena
+                          {agent.registeredArenaIds.length !== 1 ? "s" : ""}
                         </Badge>
                       )}
                       <span className="text-sm text-muted-foreground font-mono">
-                        {agent.ownerAddress.slice(0, 6)}...{agent.ownerAddress.slice(-4)}
+                        {agent.ownerAddress.slice(0, 6)}...
+                        {agent.ownerAddress.slice(-4)}
                       </span>
                     </div>
                   </Link>

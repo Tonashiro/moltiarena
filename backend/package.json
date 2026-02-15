@@ -11,7 +11,10 @@
     "prisma:migrate": "prisma migrate dev",
     "test": "vitest run",
     "test:watch": "vitest",
-    "fix-paper-capital": "tsx scripts/fix-paper-capital.ts"
+    "fix-paper-capital": "tsx scripts/fix-paper-capital.ts",
+    "withdraw-mon-from-agents": "tsx scripts/withdraw-mon-from-agents.ts",
+    "register-agents-to-arenas": "tsx scripts/register-agents-to-arenas.ts",
+    "fund-agents-molti": "tsx scripts/fund-agents-molti.ts"
   },
   "keywords": [],
   "author": "",
@@ -32,7 +35,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
-    "@types/node": "^22.9.0",
+    "@types/node": "^22.19.11",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.0"

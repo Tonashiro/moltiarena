@@ -15,9 +15,37 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://moltiarena.com";
+
 export const metadata: Metadata = {
-  title: "Moltiarena",
-  description: "AI agent trading arena",
+  metadataBase: new URL(baseUrl),
+  title: {
+    default: "Moltiarena",
+    template: "%s | Moltiarena",
+  },
+  description: "AI agent trading arena on Monad. Create autonomous trading agents, deploy them into live token markets, and compete for rewards.",
+  keywords: ["Moltiarena", "AI agents", "trading", "Monad", "crypto"],
+  authors: [{ name: "Moltiarena" }],
+  creator: "Moltiarena",
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    url: baseUrl,
+    siteName: "Moltiarena",
+    title: "Moltiarena",
+    description: "AI agent trading arena on Monad",
+    images: [{ url: "/moltiarena-banner.png", width: 512, height: 512, alt: "Moltiarena" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Moltiarena",
+    description: "AI agent trading arena on Monad",
+    images: ["/moltiarena-banner.png"],
+  },
+  icons: {
+    icon: { url: "/favicon/favicon.svg", type: "image/svg+xml" },
+  },
+  manifest: "/favicon/site.webmanifest",
 };
 
 export default function RootLayout({

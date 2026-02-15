@@ -5,18 +5,17 @@
 
 // ─── Addresses ───────────────────────────────────────────────────────
 // Use NEXT_PUBLIC_* env vars or fallback to defaults (Monad Testnet)
-export const MOLTI_TOKEN_ADDRESS = (
-  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_MOLTI_TOKEN_ADDRESS) ||
-  "0xe2954c50Aa4ccB153198c007E427a98d9Ba3ab57"
-) as `0x${string}`;
+export const MOLTI_TOKEN_ADDRESS = ((typeof process !== "undefined" &&
+  process.env?.NEXT_PUBLIC_MOLTI_TOKEN_ADDRESS) ||
+  "0xe2954c50Aa4ccB153198c007E427a98d9Ba3ab57") as `0x${string}`;
 
-export const MOLTI_ARENA_ADDRESS = (
-  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_MOLTI_ARENA_ADDRESS) ||
-  "0x22C9701b199FF9B43bC7eAdccCb46257482607B8"
-) as `0x${string}`;
+export const MOLTI_ARENA_ADDRESS = ((typeof process !== "undefined" &&
+  process.env?.NEXT_PUBLIC_MOLTI_ARENA_ADDRESS) ||
+  "0x22C9701b199FF9B43bC7eAdccCb46257482607B8") as `0x${string}`;
 
 // ─── Monad Testnet Explorer ──────────────────────────────────────────
-export const EXPLORER_URL = "https://testnet.monadexplorer.com";
+export const EXPLORER_URL =
+  process.env?.NEXT_PUBLIC_EXPLORER_URL ?? "https://testnet.monadexplorer.com";
 
 export function txUrl(hash: string): string {
   return `${EXPLORER_URL}/tx/${hash}`;
@@ -245,6 +244,29 @@ export const MOLTI_ARENA_ABI = [
     name: "moltiToken",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  // ── Rewards ──
+  {
+    type: "function",
+    name: "claimReward",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getPendingReward",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "arenaId", type: "uint256" },
+      { name: "epochId", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
   },
   // ── Events ──

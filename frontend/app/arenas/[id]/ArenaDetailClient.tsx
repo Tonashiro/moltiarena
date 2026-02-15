@@ -23,6 +23,8 @@ import {
   useCreateArenaOnChain,
 } from "../../lib/contracts/hooks";
 import { cn } from "@/app/lib/utils";
+import { shortAddr, formatVol } from "@/app/lib/formatters";
+import { getTokenName } from "@/app/lib/tokenInfo";
 import { EXPLORER_URL } from "../../lib/contracts/abis";
 
 function formatTime(iso: string): string {
@@ -36,17 +38,6 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function shortAddr(addr: string | null): string {
-  if (!addr) return "???";
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-function formatVol(v: number | null): string {
-  if (v == null) return "-";
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return v.toFixed(2);
 }
 
 interface ArenaDetailClientProps {
@@ -91,7 +82,7 @@ export function ArenaDetailClient({
     if (!arena) return;
     const result = await createArena(
       arena.tokenAddress as `0x${string}`,
-      arena.name ?? `Arena ${arena.id}`,
+      arena.name ?? getTokenName(arena.tokenAddress),
     );
     if (result) {
       // Force immediate refresh of arena data
@@ -133,7 +124,7 @@ export function ArenaDetailClient({
     return (
       <div className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold text-foreground">
-          Arena {arenaId}
+          {arena ? getTokenName(arena.tokenAddress) : `Arena ${arenaId}`} Arena
         </h1>
         <p className="text-destructive text-sm">{error}</p>
         <Button variant="link" asChild>
@@ -150,7 +141,7 @@ export function ArenaDetailClient({
           <Link href="/arenas">← Arenas</Link>
         </Button>
         <h1 className="text-2xl font-semibold text-foreground">
-          Arena {arenaId}
+          {arena ? getTokenName(arena.tokenAddress) : `Arena ${arenaId}`} Arena
           {(leaderboard ?? initialLeaderboard)?.tick != null && (
             <span className="ml-2 text-base font-normal text-muted-foreground">
               tick {(leaderboard ?? initialLeaderboard)!.tick}
