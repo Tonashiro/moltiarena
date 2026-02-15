@@ -1,0 +1,11 @@
+# Dotenv files (repo-wide)
+.env
+.env.*
+!.env.example
+
+# Contract (moltiarena) - same as contract/.gitignore but scoped
+contract/moltiarena/cache/
+contract/moltiarena/out/
+contract/moltiarena/broadcast/*/31337/
+contract/moltiarena/broadcast/**/dry-run/
+contract/moltiarena/docs/

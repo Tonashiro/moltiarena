@@ -273,6 +273,8 @@ export async function startEpoch(
     try {
       const hash = await withRetry("createEpoch", () =>
         walletClient.sendTransaction({
+          account: walletClient.account!,
+          chain,
           to: MOLTI_ARENA_ADDRESS as `0x${string}`,
           data: encodeFunctionData({
             abi: MOLTI_ARENA_ABI,
@@ -405,21 +407,24 @@ export async function autoRenewAgentsForEpoch(
           }
         }
 
+        const agentOnChainId = reg.agent.onChainId;
+        if (agentOnChainId == null) continue;
         await publicClient.simulateContract({
           address: MOLTI_ARENA_ADDRESS as `0x${string}`,
           abi: MOLTI_ARENA_ABI,
           functionName: "autoRenewEpoch",
-          args: [BigInt(reg.agent.onChainId), BigInt(arenaOnChainId), BigInt(onChainEpochId)],
+          args: [BigInt(agentOnChainId), BigInt(arenaOnChainId), BigInt(onChainEpochId)],
           account,
         });
-
         const sendTx = () =>
           walletClient.sendTransaction({
+            account: walletClient.account!,
+            chain,
             to: MOLTI_ARENA_ADDRESS as `0x${string}`,
             data: encodeFunctionData({
               abi: MOLTI_ARENA_ABI,
               functionName: "autoRenewEpoch",
-              args: [BigInt(reg.agent.onChainId), BigInt(arenaOnChainId), BigInt(onChainEpochId)],
+              args: [BigInt(agentOnChainId), BigInt(arenaOnChainId), BigInt(onChainEpochId)],
             }),
           });
 
@@ -578,6 +583,8 @@ async function autoRenewAgentsForEpochFromOnChain(
 
         const sendTx = () =>
           walletClient.sendTransaction({
+            account: walletClient.account!,
+            chain,
             to: MOLTI_ARENA_ADDRESS as `0x${string}`,
             data: encodeFunctionData({
               abi: MOLTI_ARENA_ABI,
@@ -786,6 +793,8 @@ export async function distributeRewardsForEpoch(
   try {
     const hash = await withRetry("setPendingRewardsBatch", () =>
       walletClient.sendTransaction({
+        account: walletClient.account!,
+        chain,
         to: MOLTI_ARENA_ADDRESS as `0x${string}`,
         data: encodeFunctionData({
           abi: MOLTI_ARENA_ABI,
@@ -838,6 +847,8 @@ export async function endEpoch(
     try {
       await withRetry("endEpoch", () =>
         walletClient.sendTransaction({
+          account: walletClient.account!,
+          chain,
           to: MOLTI_ARENA_ADDRESS as `0x${string}`,
           data: encodeFunctionData({
             abi: MOLTI_ARENA_ABI,
@@ -938,6 +949,8 @@ export async function sweepUnclaimedForEpoch(
   try {
     const hash = await withRetry("sweepUnclaimedRewards", () =>
       walletClient.sendTransaction({
+        account: walletClient.account!,
+        chain,
         to: MOLTI_ARENA_ADDRESS as `0x${string}`,
         data: encodeFunctionData({
           abi: MOLTI_ARENA_ABI,

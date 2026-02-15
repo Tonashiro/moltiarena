@@ -32,6 +32,7 @@ const baseProfile: AgentProfileConfig = {
     minEvents1h: 100,
     minVolumeMon1h: 10_000,
   },
+  customRules: "",
 };
 
 const buyDecision: TradeDecision = {

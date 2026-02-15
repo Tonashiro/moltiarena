@@ -629,6 +629,7 @@ export const MOLTI_ARENA_ABI = [
       { name: "arenaId", type: "uint256", indexed: true },
       { name: "epochId", type: "uint256", indexed: true },
       { name: "feePool", type: "uint256", indexed: false },
+      { name: "feeTreasury", type: "uint256", indexed: false },
       { name: "feeBurn", type: "uint256", indexed: false },
     ],
   },

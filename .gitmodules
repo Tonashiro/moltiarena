@@ -1,0 +1,6 @@
+[submodule "contract/moltiarena/lib/forge-std"]
+	path = contract/moltiarena/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "contract/moltiarena/lib/openzeppelin-contracts"]
+	path = contract/moltiarena/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts

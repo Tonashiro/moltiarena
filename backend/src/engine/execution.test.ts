@@ -7,6 +7,7 @@ const snapshot: ExecutionSnapshot = { tick: 10, price: 2 };
 const basePortfolio: ExecutionPortfolio = {
   cashMon: 100,
   tokenUnits: 0,
+  moltiLocked: 0,
   avgEntryPrice: null,
   tradesThisWindow: 0,
   lastTradeTick: null,
@@ -69,6 +70,7 @@ describe("executePaperTrade", () => {
     const port: ExecutionPortfolio = {
       cashMon: 80,
       tokenUnits: 10,
+      moltiLocked: 20,
       avgEntryPrice: 1.5,
       tradesThisWindow: 1,
       lastTradeTick: 5,
@@ -90,6 +92,7 @@ describe("executePaperTrade", () => {
     const port: ExecutionPortfolio = {
       cashMon: 50,
       tokenUnits: 20,
+      moltiLocked: 40,
       avgEntryPrice: 1,
       tradesThisWindow: 2,
       lastTradeTick: 8,
@@ -113,6 +116,7 @@ describe("executePaperTrade", () => {
     const port: ExecutionPortfolio = {
       cashMon: 50,
       tokenUnits: 20,
+      moltiLocked: 30,
       avgEntryPrice: 1.5,
       tradesThisWindow: 0,
       lastTradeTick: null,
@@ -131,6 +135,7 @@ describe("executePaperTrade", () => {
     const port: ExecutionPortfolio = {
       cashMon: 0,
       tokenUnits: 10,
+      moltiLocked: 20,
       avgEntryPrice: 2,
       tradesThisWindow: 0,
       lastTradeTick: null,
