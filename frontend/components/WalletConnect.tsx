@@ -23,11 +23,12 @@ export function WalletConnect({ className }: WalletConnectProps) {
   const { disconnect } = useDisconnect();
   const { switchChain } = useSwitchChain();
   const chainId = useChainId();
+  const targetChainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID);
+  const networkLabel =
+    targetChainId === 143 ? "Monad Mainnet" : "Monad Testnet";
 
   const isWrongNetwork =
-    isConnected &&
-    address &&
-    chainId !== Number(process.env.NEXT_PUBLIC_CHAIN_ID);
+    isConnected && address && chainId !== targetChainId;
 
   if (isWrongNetwork) {
     return (
@@ -36,10 +37,10 @@ export function WalletConnect({ className }: WalletConnectProps) {
         size="sm"
         className={cn(className)}
         onClick={() =>
-          switchChain({ chainId: Number(process.env.NEXT_PUBLIC_CHAIN_ID) })
+          switchChain({ chainId: targetChainId })
         }
       >
-        Switch to Monad Testnet
+        Switch to {networkLabel}
       </Button>
     );
   }
@@ -48,7 +49,7 @@ export function WalletConnect({ className }: WalletConnectProps) {
     return (
       <div className={cn("flex items-center gap-2", className)}>
         <span className="text-xs text-muted-foreground hidden sm:inline">
-          Monad Testnet
+          {networkLabel}
         </span>
         <span className="text-sm font-mono text-muted-foreground">
           {formatAddress(address)}

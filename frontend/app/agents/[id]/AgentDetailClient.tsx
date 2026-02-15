@@ -186,11 +186,13 @@ export function AgentDetailClient({
         claimedRewards={statsData?.rewardsCollected ?? 0}
       />
 
-      <AgentRewardsSection
-        agentOnChainId={a.onChainId ?? null}
-        stats={statsData ?? null}
-        onClaimSuccess={() => void refetchAgentStats()}
-      />
+      {isOwner && (
+        <AgentRewardsSection
+          agentOnChainId={a.onChainId ?? null}
+          stats={statsData ?? null}
+          onClaimSuccess={() => void refetchAgentStats()}
+        />
+      )}
 
       {isOwner && agentWallet && (
         <FundWithdrawCard

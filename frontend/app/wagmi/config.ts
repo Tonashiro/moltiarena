@@ -17,7 +17,12 @@ const projectId =
     ? process.env.NEXT_PUBLIC_WALLET_CONNECT
     : undefined;
 
-/** Optional: override Monad Testnet RPC (default: public testnet RPC). */
+/** Chain ID for the app (Monad Testnet = 10143, Monad Mainnet = 143). */
+export const CHAIN_ID =
+  typeof process !== "undefined" && process.env.NEXT_PUBLIC_CHAIN_ID
+    ? Number(process.env.NEXT_PUBLIC_CHAIN_ID)
+    : 10143;
+
 const testnetRpcUrl =
   typeof process !== "undefined" &&
   process.env.NEXT_PUBLIC_RPC_URL &&
@@ -25,17 +30,14 @@ const testnetRpcUrl =
     ? process.env.NEXT_PUBLIC_RPC_URL.trim()
     : "https://testnet-rpc.monad.xyz";
 
-/** Chain ID for the app (Monad Testnet = 10143). Use env to switch later if needed. */
-export const CHAIN_ID =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_CHAIN_ID
-    ? Number(process.env.NEXT_PUBLIC_CHAIN_ID)
-    : 10143;
-
 const mainnetRpcUrl =
   typeof process !== "undefined" &&
   process.env.NEXT_PUBLIC_MAINNET_RPC_URL?.trim()
     ? process.env.NEXT_PUBLIC_MAINNET_RPC_URL.trim()
     : "https://rpc.monad.xyz";
+
+/** RPC URL for the active chain (mainnet when CHAIN_ID=143). */
+const activeRpcUrl = CHAIN_ID === 143 ? mainnetRpcUrl : testnetRpcUrl;
 
 if (!projectId) {
   throw new Error(
@@ -45,10 +47,10 @@ if (!projectId) {
 
 // ─── Chains ─────────────────────────────────────────────────────────────
 
-/** Monad Testnet: single chain for the app; RPC from env for custom endpoints. */
-export const monadTestnet = defineChain({
+/** Active chain: Monad Testnet (10143) or Monad Mainnet (143); RPC from env. */
+export const monadChain = defineChain({
   id: CHAIN_ID,
-  name: "Monad",
+  name: CHAIN_ID === 143 ? "Monad" : "Monad Testnet",
   nativeCurrency: {
     decimals: 18,
     name: "MON",
@@ -56,20 +58,20 @@ export const monadTestnet = defineChain({
   },
   rpcUrls: {
     default: {
-      http: [testnetRpcUrl],
+      http: [activeRpcUrl],
     },
   },
   blockExplorers: {
     default: {
       name: "Monad Explorer",
-      url: "https://monadvision.com/",
+      url: CHAIN_ID === 143 ? "https://explorer.monad.xyz" : "https://monadvision.com/",
     },
   },
   caipNetworkId: `eip155:${CHAIN_ID}`,
   chainNamespace: "eip155",
 } as const);
 
-/** Monad Mainnet (id 143). Export for future use; not in networks for now. */
+/** Monad Mainnet (id 143). Export for future use. */
 export const monadMainnet = defineChain({
   id: 143,
   name: "Monad",
@@ -93,11 +95,11 @@ export const monadMainnet = defineChain({
   chainNamespace: "eip155",
 } as const);
 
-/** All networks the app supports (testnet only for now). */
-export const networks = [monadTestnet] as const;
+/** All networks the app supports. */
+export const networks = [monadChain] as const;
 
 /** Default chain for the modal and for contract calls. */
-export const defaultNetwork = monadTestnet;
+export const defaultNetwork = monadChain;
 
 // ─── Wagmi adapter (single config used by all wagmi hooks) ───────────────
 

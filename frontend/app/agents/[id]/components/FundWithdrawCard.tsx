@@ -21,6 +21,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export interface FundWithdrawCardProps {
   agentId: number;
@@ -234,17 +241,18 @@ export function FundWithdrawCard({
                 >
                   Token
                 </Label>
-                <select
-                  id="withdraw-token"
+                <Select
                   value={withdrawToken}
-                  onChange={(e) =>
-                    setWithdrawToken(e.target.value as "MOLTI" | "MON")
-                  }
-                  className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  onValueChange={(v) => setWithdrawToken(v as "MOLTI" | "MON")}
                 >
-                  <option value="MOLTI">MOLTI</option>
-                  <option value="MON">MON</option>
-                </select>
+                  <SelectTrigger id="withdraw-token" className="h-9">
+                    <SelectValue placeholder="Select token" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="MOLTI">MOLTI</SelectItem>
+                    <SelectItem value="MON">MON</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label
