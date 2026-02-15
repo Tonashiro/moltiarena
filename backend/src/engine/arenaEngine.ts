@@ -6,11 +6,12 @@ import { executePaperTrade } from "./execution.js";
 import { AgentProfileConfigSchema } from "../schemas/agentProfile.js";
 import type { MarketSnapshot } from "../market/types.js";
 import type { AgentMemoryService } from "../ai/memory.js";
+import { formatEther } from "viem";
 import {
   executeOnChainTrade,
   getContractPortfolio,
-  depositMoltiToArena,
   getMonBalance,
+  getMoltiBalance,
 } from "../services/smartAccount.js";
 import { getCurrentEpoch } from "../services/epochService.js";
 
@@ -32,8 +33,9 @@ export interface LeaderboardEntry {
   name: string;
   pnlPct: number;
   equity: number;
-  cashMon: number;
-  tokenUnits: number;
+  cashMon: number;      // wallet MOLTI balance
+  tokenUnits: number;   // virtual token position
+  moltiLocked: number;  // MOLTI staked in this arena
   initialCapital: number;
   volumeTraded: number;
   tradeCount: number;
@@ -76,6 +78,22 @@ async function processOneAgent(
   },
 ): Promise<void> {
   const agent = reg.agent;
+
+  // All agents must have on-chain credentials
+  if (
+    !agent.encryptedSignerKey ||
+    agent.onChainId == null ||
+    arena.onChainId == null ||
+    !agent.smartAccountAddress
+  ) {
+    if (DEBUG) {
+      console.log(
+        `[arenaEngine] agent ${agent.id} (${agent.name}) missing on-chain credentials, skip`,
+      );
+    }
+    return;
+  }
+
   const profileParsed = AgentProfileConfigSchema.safeParse(agent.profileJson);
   if (!profileParsed.success) {
     if (DEBUG) {
@@ -104,9 +122,24 @@ async function processOneAgent(
     return;
   }
 
+  // Read on-chain state: wallet MOLTI balance as "cash", contract tokenUnits + moltiLocked
+  const walletAddress = agent.smartAccountAddress as `0x${string}`;
+  const agentOnChainId = agent.onChainId as number;
+  const arenaOnChainId = arena.onChainId as number;
+
+  const [walletMoltiWei, onChainPortfolio] = await Promise.all([
+    getMoltiBalance(walletAddress),
+    getContractPortfolio(agentOnChainId, arenaOnChainId),
+  ]);
+
+  const cashMon = Number(formatEther(walletMoltiWei));
+  const tokenUnits = Number(formatEther(onChainPortfolio.tokenUnits));
+  const moltiLocked = Number(formatEther(onChainPortfolio.moltiLocked));
+
   const portfolio = {
-    cashMon: portfolioRow.cashMon,
-    tokenUnits: portfolioRow.tokenUnits,
+    cashMon,
+    tokenUnits,
+    moltiLocked,
     avgEntryPrice: portfolioRow.avgEntryPrice,
     tradesThisWindow: portfolioRow.tradesThisWindow,
     lastTradeTick: portfolioRow.lastTradeTick,
@@ -121,9 +154,16 @@ async function processOneAgent(
 
   if (DEBUG) {
     console.log(
-      `[arenaEngine] AI decision agent ${agent.id} (${agent.name}) arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) tick ${snapshot.tick}`,
+      `[arenaEngine] AI decision agent ${agent.id} (${agent.name}) arena ${arena.id} (${arena.name ?? arena.tokenAddress.slice(0, 10)}...) tick ${snapshot.tick} ` +
+        `cash=${cashMon.toFixed(2)} tokens=${tokenUnits.toFixed(4)} locked=${moltiLocked.toFixed(2)}`,
     );
   }
+  const equityVal = equity(portfolio.cashMon, portfolio.tokenUnits, snapshot.price);
+  const positionPctVal =
+    equityVal > 0
+      ? (portfolio.tokenUnits * snapshot.price) / equityVal
+      : 0;
+
   const modelDecision = await decideTrade({
     market: {
       price: snapshot.price,
@@ -152,6 +192,10 @@ async function processOneAgent(
       avgEntryPrice: portfolio.avgEntryPrice,
       tradesThisWindow: portfolio.tradesThisWindow,
       lastTradeTick: portfolio.lastTradeTick,
+      currentTick: snapshot.tick,
+      equity: equityVal,
+      positionPct: positionPctVal,
+      initialCapital: portfolio.initialCapital ?? 0,
     },
     profile: {
       goal: profileConfig.goal,
@@ -184,17 +228,9 @@ async function processOneAgent(
   const sizePct = finalDecision.sizePct ?? 0;
 
   // Pre-flight MON check: skip agents with insufficient gas for on-chain trades
-  const wouldDoOnChain =
-    action !== "HOLD" &&
-    agent.encryptedSignerKey &&
-    agent.onChainId != null &&
-    arena.onChainId != null;
-
-  if (wouldDoOnChain && agent.smartAccountAddress) {
+  if (action !== "HOLD") {
     try {
-      const monBal = await getMonBalance(
-        agent.smartAccountAddress as `0x${string}`
-      );
+      const monBal = await getMonBalance(walletAddress);
       if (monBal < MON_BALANCE_THRESHOLD_WEI) {
         await deps.prisma.agentDecision.create({
           data: {
@@ -218,7 +254,6 @@ async function processOneAgent(
         return;
       }
     } catch (err) {
-      // Balance check threw (RPC error, network, etc.) — log and skip
       console.warn(
         `[arenaEngine] agent ${agent.id} MON balance check failed, skip:`,
         err instanceof Error ? err.message : err
@@ -226,6 +261,10 @@ async function processOneAgent(
       return;
     }
   }
+
+  // Compute unrealized PnL at decision time (for HOLD display in audit log)
+  const equityNow = equity(portfolio.cashMon, portfolio.tokenUnits, snapshot.price);
+  const pnlPctAtDecision = pnlPct(equityNow, portfolio.initialCapital);
 
   // Store AgentDecision for every tick (audit log)
   const decisionRecord = await deps.prisma.agentDecision.create({
@@ -238,6 +277,7 @@ async function processOneAgent(
       reason: finalDecision.reason,
       confidence: finalDecision.confidence ?? null,
       price: snapshot.price,
+      pnlPctAtDecision,
       status: action === "HOLD" ? "success" : "pending",
       onChainTxHash: null,
     },
@@ -284,8 +324,6 @@ async function processOneAgent(
 
   // BUY/SELL: on-chain first, then update DB only on success
   const encKey = agent.encryptedSignerKey as string;
-  const agentOnChainId = agent.onChainId as number;
-  const arenaOnChainId = arena.onChainId as number;
 
   const currentEpoch = await getCurrentEpoch(
     { prisma: deps.prisma },
@@ -293,33 +331,25 @@ async function processOneAgent(
   );
   const epochOnChainId = currentEpoch?.onChainEpochId ?? 0;
 
+  // For BUY: compute the MOLTI amount to send from wallet
+  let buyAmountWei: bigint | undefined;
+  if (action === "BUY" && sizePct > 0) {
+    buyAmountWei =
+      (walletMoltiWei * BigInt(Math.floor(sizePct * 1e18))) / BigInt(1e18);
+    if (buyAmountWei === 0n) {
+      console.warn(
+        `[arenaEngine] agent ${agent.id} BUY amount is 0 (wallet=${walletMoltiWei} sizePct=${sizePct}), skip`
+      );
+      await deps.prisma.agentDecision.update({
+        where: { id: decisionRecord.id },
+        data: { status: "failed" },
+      });
+      return;
+    }
+  }
+
   let txHash: string | null = null;
   try {
-    // For BUY: deposit MOLTI if contract has insufficient cashMolti
-    const cashMon = portfolio.cashMon;
-    if (action === "BUY" && sizePct > 0) {
-      const spend = cashMon * sizePct;
-      if (spend > 0) {
-        const cashMonWei = BigInt(Math.floor(cashMon * 1e18));
-        const spendWei = BigInt(Math.floor(spend * 1e18));
-        const { cashMolti } = await getContractPortfolio(
-          agentOnChainId,
-          arenaOnChainId
-        );
-        if (cashMolti < spendWei) {
-          const depositAmount = cashMonWei - cashMolti;
-          if (depositAmount > 0n) {
-            await depositMoltiToArena({
-              encryptedSignerKey: encKey,
-              agentOnChainId,
-              arenaOnChainId,
-              amountWei: depositAmount,
-            });
-          }
-        }
-      }
-    }
-
     txHash = await executeOnChainTrade({
       encryptedSignerKey: encKey,
       agentOnChainId,
@@ -327,6 +357,7 @@ async function processOneAgent(
       epochOnChainId,
       action,
       sizePct,
+      buyAmountWei,
       price: snapshot.price,
       tick: snapshot.tick,
     });
@@ -350,12 +381,23 @@ async function processOneAgent(
     return;
   }
 
-  // On-chain success: sync DB (portfolio + trade)
+  // On-chain success: re-read on-chain state and sync DB
+  const [walletAfterWei, portfolioAfter] = await Promise.all([
+    getMoltiBalance(walletAddress),
+    getContractPortfolio(agentOnChainId, arenaOnChainId),
+  ]);
+
+  const cashAfter = Number(formatEther(walletAfterWei));
+  const tokenUnitsAfter = Number(formatEther(portfolioAfter.tokenUnits));
+  const moltiLockedAfter = Number(formatEther(portfolioAfter.moltiLocked));
+
+  // Use on-chain paper trade to compute trade record for DB
   const { nextPortfolio, tradeRecord } = executePaperTrade(
     { tick: snapshot.tick, price: snapshot.price },
     {
       cashMon: portfolio.cashMon,
       tokenUnits: portfolio.tokenUnits,
+      moltiLocked: portfolio.moltiLocked,
       avgEntryPrice: portfolio.avgEntryPrice,
       tradesThisWindow: portfolio.tradesThisWindow,
       lastTradeTick: portfolio.lastTradeTick,
@@ -363,12 +405,18 @@ async function processOneAgent(
     finalDecision,
   );
 
+  // Override paper values with actual on-chain state
+  nextPortfolio.cashMon = cashAfter;
+  nextPortfolio.tokenUnits = tokenUnitsAfter;
+  nextPortfolio.moltiLocked = moltiLockedAfter;
+
   await deps.prisma.$transaction(async (tx) => {
     await tx.portfolio.update({
       where: { id: portfolioRow.id },
       data: {
         cashMon: nextPortfolio.cashMon,
         tokenUnits: nextPortfolio.tokenUnits,
+        moltiLocked: nextPortfolio.moltiLocked,
         avgEntryPrice: nextPortfolio.avgEntryPrice,
         tradesThisWindow: nextPortfolio.tradesThisWindow,
         lastTradeTick: nextPortfolio.lastTradeTick,
@@ -386,6 +434,7 @@ async function processOneAgent(
           sizePct: tradeRecord.sizePct,
           price: tradeRecord.price,
           tradeValueMon: tradeRecord.tradeValueMon,
+          avgEntryPriceBefore: tradeRecord.avgEntryPriceBefore,
           cashAfter: tradeRecord.cashAfter,
           tokenAfter: tradeRecord.tokenAfter,
           reason: tradeRecord.reason,
@@ -434,60 +483,6 @@ async function processOneAgent(
           price: t.price,
           reason: t.reason,
         })),
-        pnlAfter,
-        totalTrades
-      );
-    } catch (error) {
-      console.error(
-        `[arenaEngine] Failed to update memory for agent ${agent.id} arena ${arena.id}:`,
-        error
-      );
-    }
-  }
-
-  // Update agent memory after decision (if memory service is available)
-  if (deps.memoryService !== undefined) {
-    try {
-      // Get recent trades for memory generation (last 10 trades)
-      const recentTrades = await deps.prisma.trade.findMany({
-        where: {
-          agentId: agent.id,
-          arenaId: arena.id,
-        },
-        orderBy: { tick: "desc" },
-        take: 10,
-      });
-
-      // Calculate PnL after this trade using actual initial capital
-      const equityAfter = equity(
-        nextPortfolio.cashMon,
-        nextPortfolio.tokenUnits,
-        snapshot.price
-      );
-      const pnlAfter = pnlPct(equityAfter, portfolio.initialCapital);
-
-      // Get total trade count
-      const totalTrades = await deps.prisma.trade.count({
-        where: {
-          agentId: agent.id,
-          arenaId: arena.id,
-        },
-      });
-
-      // Update memory with recent trades and performance
-      await deps.memoryService.updateMemory(
-        agent.id,
-        arena.id,
-        snapshot.tick,
-        recentTrades
-          .reverse() // Reverse to chronological order
-          .map((t) => ({
-            tick: t.tick,
-            action: t.action,
-            sizePct: t.sizePct,
-            price: t.price,
-            reason: t.reason,
-          })),
         pnlAfter,
         totalTrades
       );
@@ -612,6 +607,7 @@ export function startArenaEngine(deps: ArenaEngineDeps): { stop: () => void } {
               equity: eq,
               cashMon: p.cashMon,
               tokenUnits: p.tokenUnits,
+              moltiLocked: p.moltiLocked,
               initialCapital: p.initialCapital,
               volumeTraded: vol,
               tradeCount: trades,

@@ -256,7 +256,7 @@ export function useRegisterToArenaOnChain() {
   const [txHash, setTxHash] = useState<Hex | undefined>();
 
   const register = useCallback(
-    async (onChainAgentId: bigint, onChainArenaId: bigint, depositMolti: bigint) => {
+    async (onChainAgentId: bigint, onChainArenaId: bigint) => {
       if (!address) {
         toastError("Connect your wallet first");
         return null;
@@ -275,38 +275,7 @@ export function useRegisterToArenaOnChain() {
         }
       }
 
-      // Step 1: Approve MOLTI for registration (skip when deposit is 0)
-      if (depositMolti > BigInt(0)) {
-        const approvalToast = toastPending("Approving registration...");
-        try {
-          setStatus("approving");
-          const approveHash = await writeContractAsync({
-            address: MOLTI_TOKEN_ADDRESS,
-            abi: MOLTI_TOKEN_ABI,
-            functionName: "approve",
-            args: [MOLTI_ARENA_ADDRESS, depositMolti],
-            chainId: CHAIN_ID,
-          });
-
-          setStatus("confirming-approval");
-          toastUpdateSuccess(approvalToast, "Approval submitted...");
-
-          const { waitForTransactionReceipt } = await import("wagmi/actions");
-          const { config } = await import("../../wagmi/config");
-          await waitForTransactionReceipt(config, {
-            hash: approveHash,
-            confirmations: 1,
-          });
-
-          toastUpdateSuccess(approvalToast, "Approved!");
-        } catch (err) {
-          setStatus("error");
-          toastUpdateError(approvalToast, extractTxError(err));
-          return null;
-        }
-      }
-
-      // Step 2: Register to arena
+      // Register to arena (no deposit required — MOLTI is pulled on BUY)
       const registerToast = toastPending("Registering to arena...");
       try {
         setStatus("writing");
@@ -314,7 +283,7 @@ export function useRegisterToArenaOnChain() {
           address: MOLTI_ARENA_ADDRESS,
           abi: MOLTI_ARENA_ABI,
           functionName: "registerToArena",
-          args: [onChainAgentId, onChainArenaId, depositMolti],
+          args: [onChainAgentId, onChainArenaId],
           chainId: CHAIN_ID,
         });
 

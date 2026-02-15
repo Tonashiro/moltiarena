@@ -1,8 +1,12 @@
 import type { TradeDecision } from "../ai/decision.js";
 
+/** Fee rate: 0.5% (matching contract TRADE_FEE_BPS = 50 / 10000). */
+const TRADE_FEE_RATE = 0.005;
+
 export interface ExecutionPortfolio {
-  cashMon: number;
-  tokenUnits: number;
+  cashMon: number;          // wallet MOLTI balance
+  tokenUnits: number;       // virtual token position
+  moltiLocked: number;      // MOLTI staked in this arena (after BUY fees)
   avgEntryPrice: number | null;
   tradesThisWindow: number;
   lastTradeTick: number | null;
@@ -17,7 +21,8 @@ export interface TradeRecord {
   action: "BUY" | "SELL";
   sizePct: number;
   price: number;
-  tradeValueMon: number; // Trade notional for volume aggregation
+  tradeValueMon: number; // Trade notional / MOLTI amount
+  avgEntryPriceBefore: number | null; // For SELL: avg entry price before trade (PnL)
   cashAfter: number;
   tokenAfter: number;
   reason: string;
@@ -32,6 +37,12 @@ export interface ExecutionResult {
 /**
  * Executes a paper trade from the given decision. Returns updated portfolio
  * and an optional trade record when BUY or SELL is executed.
+ *
+ * BUY: spend = cashMon * sizePct. Fee deducted from spend. Net buys virtual tokens.
+ *      moltiLocked increases by netSpend.
+ * SELL: moltiBack = moltiLocked * sizePct. Fee deducted from moltiBack.
+ *      Net returned to cashMon. tokenUnits reduced proportionally.
+ *      PnL is paper-only — SELL returns proportional original deposit, not price-based.
  */
 export function executePaperTrade(
   snapshot: ExecutionSnapshot,
@@ -47,26 +58,39 @@ export function executePaperTrade(
 
   let cashMon = portfolio.cashMon;
   let tokenUnits = portfolio.tokenUnits;
+  let moltiLocked = portfolio.moltiLocked;
   let avgEntryPrice = portfolio.avgEntryPrice;
 
   if (action === "BUY") {
-    const spend = cashMon * sizePct;
-    const units = spend / price;
+    const spend = cashMon * sizePct;        // gross MOLTI from wallet
+    const fee = spend * TRADE_FEE_RATE;
+    const netSpend = spend - fee;
+    const units = netSpend / price;         // virtual tokens bought
+
     cashMon -= spend;
+    moltiLocked += netSpend;
     tokenUnits += units;
+
     if (portfolio.tokenUnits > 0) {
       const totalCost =
-        (portfolio.avgEntryPrice ?? 0) * portfolio.tokenUnits + spend;
+        (portfolio.avgEntryPrice ?? 0) * portfolio.tokenUnits + netSpend;
       avgEntryPrice = tokenUnits > 0 ? totalCost / tokenUnits : null;
     } else {
       avgEntryPrice = price;
     }
   } else {
-    // SELL
+    // SELL: return proportional moltiLocked (cost-basis, NOT price-based)
+    const moltiBack = moltiLocked * sizePct;
+    const fee = moltiBack * TRADE_FEE_RATE;
+    const netReturn = moltiBack - fee;
+
+    moltiLocked -= moltiBack;
+    cashMon += netReturn;
+
+    // Reduce virtual token position proportionally
     const sellUnits = tokenUnits * sizePct;
-    const receive = sellUnits * price;
-    cashMon += receive;
     tokenUnits -= sellUnits;
+
     if (tokenUnits <= 0) {
       avgEntryPrice = null;
     }
@@ -75,20 +99,24 @@ export function executePaperTrade(
   const nextPortfolio: ExecutionPortfolio = {
     cashMon,
     tokenUnits,
+    moltiLocked,
     avgEntryPrice,
     tradesThisWindow: portfolio.tradesThisWindow + 1,
     lastTradeTick: tick,
   };
 
+  // Trade value for volume tracking
   const tradeValueMon =
     action === "BUY"
       ? portfolio.cashMon * sizePct
-      : portfolio.tokenUnits * sizePct * price;
+      : portfolio.moltiLocked * sizePct;
+
   const tradeRecord: TradeRecord = {
     action,
     sizePct,
     price,
     tradeValueMon,
+    avgEntryPriceBefore: action === "SELL" ? portfolio.avgEntryPrice : null,
     cashAfter: cashMon,
     tokenAfter: tokenUnits,
     reason,

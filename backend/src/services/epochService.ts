@@ -12,6 +12,7 @@ import {
   http,
   encodeFunctionData,
   decodeErrorResult,
+  decodeEventLog,
   formatEther,
   type Hex,
 } from "viem";
@@ -175,6 +176,33 @@ export async function startEpoch(
     where: { arenaId, startAt },
   });
   if (existing) {
+    // Backfill onChainEpochId if missing (e.g. createEpoch succeeded but backend failed to store it)
+    if (existing.onChainEpochId == null) {
+      const publicClient = getPublicClient();
+      if (publicClient) {
+        try {
+          const nextId = await publicClient.readContract({
+            address: MOLTI_ARENA_ADDRESS as `0x${string}`,
+            abi: MOLTI_ARENA_ABI,
+            functionName: "nextEpochId",
+            args: [BigInt(arenaOnChainId)],
+          });
+          const lastEpochId = Number(nextId) - 1;
+          if (lastEpochId >= 0) {
+            await deps.prisma.epoch.update({
+              where: { id: existing.id },
+              data: { onChainEpochId: lastEpochId },
+            });
+            console.log(
+              `[epochService] Backfilled onChainEpochId=${lastEpochId} for epoch=${existing.id} arena=${arenaId}`
+            );
+            return { ...existing, onChainEpochId: lastEpochId } as EpochInfo;
+          }
+        } catch (err) {
+          console.warn("[epochService] Backfill onChainEpochId failed:", err);
+        }
+      }
+    }
     return existing as EpochInfo;
   }
 
@@ -196,13 +224,31 @@ export async function startEpoch(
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status === "success") {
-        const nextId = await publicClient.readContract({
-          address: MOLTI_ARENA_ADDRESS as `0x${string}`,
-          abi: MOLTI_ARENA_ABI,
-          functionName: "nextEpochId",
-          args: [BigInt(arenaOnChainId)],
-        });
-        onChainEpochId = Number(nextId) - 1;
+        // Parse EpochCreated from receipt logs (exact epoch ID)
+        for (const log of receipt.logs) {
+          try {
+            const decoded = decodeEventLog({
+              abi: MOLTI_ARENA_ABI,
+              data: log.data,
+              topics: log.topics,
+            });
+            if (decoded.eventName === "EpochCreated" && decoded.args.arenaId === BigInt(arenaOnChainId)) {
+              onChainEpochId = Number(decoded.args.epochId);
+              break;
+            }
+          } catch {
+            /* skip non-EpochCreated logs */
+          }
+        }
+        if (onChainEpochId == null) {
+          const nextId = await publicClient.readContract({
+            address: MOLTI_ARENA_ADDRESS as `0x${string}`,
+            abi: MOLTI_ARENA_ABI,
+            functionName: "nextEpochId",
+            args: [BigInt(arenaOnChainId)],
+          });
+          onChainEpochId = Number(nextId) - 1;
+        }
         console.log(`[epochService] createEpoch on-chain arena=${arenaOnChainId} epochId=${onChainEpochId} tx=${hash}`);
       }
     } catch (err) {
@@ -447,16 +493,25 @@ let _lastEpochTransitionDate: string | null = null;
 /**
  * Run epoch transition: end current epoch, start next, auto-renew agents.
  * Called by cron at 00:00 UTC.
+ * @param force If true, run even if already ran today (for manual trigger).
  */
-export async function runEpochTransition(deps: EpochServiceDeps): Promise<void> {
+export async function runEpochTransition(
+  deps: EpochServiceDeps,
+  force = false
+): Promise<void> {
   const today = todayUtc();
-  if (_lastEpochTransitionDate === today) return;
+  if (!force && _lastEpochTransitionDate === today) {
+    console.log(`[epochService] runEpochTransition skipped (already ran today=${today})`);
+    return;
+  }
   _lastEpochTransitionDate = today;
 
   const arenas = await deps.prisma.arena.findMany({
     where: { onChainId: { not: null } },
     select: { id: true, onChainId: true },
   });
+
+  console.log(`[epochService] runEpochTransition started date=${today} arenas=${arenas.length}`);
 
   for (const arena of arenas) {
     const arenaOnChainId = arena.onChainId;

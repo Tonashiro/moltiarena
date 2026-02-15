@@ -188,6 +188,7 @@ export interface AgentArenaEntry {
   equity: number | null;
   cashMon: number | null;
   tokenUnits: number | null;
+  points: number | null;
   memory: {
     text: string;
     tick: number;
@@ -309,6 +310,26 @@ export function fetchEquityHistory(
   return apiGet<EquityHistoryResponse>(`/agents/${agentId}/equity-history`, options);
 }
 
+// --- Agent points history (daily bar chart) ---
+
+export interface PointsHistoryDay {
+  date: string;
+  totalPoints: number;
+  byArena: Array<{ arenaId: number; arenaName: string; points: number }>;
+}
+
+export interface PointsHistoryResponse {
+  agentId: number;
+  days: PointsHistoryDay[];
+}
+
+export function fetchPointsHistory(
+  agentId: number,
+  options?: FetchOptions,
+): Promise<PointsHistoryResponse> {
+  return apiGet<PointsHistoryResponse>(`/agents/${agentId}/points-history`, options);
+}
+
 // --- Agent trade history ---
 
 export interface AgentTradeItem {
@@ -365,6 +386,12 @@ export interface AgentDecisionItem {
   action: string;
   sizePct: number;
   price: number;
+  /** MOLTI amount used (BUY/SELL) or null for HOLD */
+  moltiAmount: number | null;
+  /** Realized PnL in MOLTI (SELL) or unrealized PnL % (HOLD). Null for BUY */
+  pnl: number | null;
+  /** "MOLTI" for SELL, "%" for HOLD */
+  pnlUnit: "MOLTI" | "%" | null;
   reason: string;
   confidence: number | null;
   status: string;

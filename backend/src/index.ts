@@ -136,6 +136,22 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// Manual trigger for epoch transition (for debugging / testing)
+// POST /admin/run-epoch-transition?force=1 to run even if already ran today
+app.post("/admin/run-epoch-transition", async (req, res) => {
+  try {
+    const force = req.query.force === "1" || req.query.force === "true";
+    await runEpochTransition({ prisma }, force);
+    res.json({ ok: true, message: "runEpochTransition completed" });
+  } catch (err) {
+    console.error("[admin] runEpochTransition failed:", err);
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
 app.use("/agents", agentsRouter);
 app.use("/arenas", arenasRouter);
 

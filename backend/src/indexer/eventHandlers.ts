@@ -97,7 +97,6 @@ export async function handleArenaCreated(
 export interface AgentRegisteredArgs {
   agentId: bigint;
   arenaId: bigint;
-  deposit: bigint;
 }
 
 export async function handleAgentRegistered(
@@ -107,10 +106,9 @@ export async function handleAgentRegistered(
 ): Promise<void> {
   const onChainAgentId = Number(args.agentId);
   const onChainArenaId = Number(args.arenaId);
-  const depositStr = args.deposit.toString();
 
   console.log(
-    `${TAG} AgentRegistered: agent=${onChainAgentId} arena=${onChainArenaId} deposit=${formatEther(args.deposit)} MOLTI`,
+    `${TAG} AgentRegistered: agent=${onChainAgentId} arena=${onChainArenaId}`,
   );
 
   // Find agent and arena by on-chain IDs
@@ -128,7 +126,7 @@ export async function handleAgentRegistered(
     return;
   }
 
-  // Create registration
+  // Create registration (no deposit — MOLTI is pulled on BUY)
   await prisma.arenaRegistration.upsert({
     where: {
       agentId_arenaId: { agentId: agent.id, arenaId: arena.id },
@@ -137,34 +135,27 @@ export async function handleAgentRegistered(
       agentId: agent.id,
       arenaId: arena.id,
       isActive: true,
-      deposit: depositStr,
+      deposit: "0",
       registrationTxHash: txHash,
     },
     update: {
       isActive: true,
-      deposit: depositStr,
       registrationTxHash: txHash,
     },
   });
 
-  // Paper capital = (fundedBalance - total registration fees) / num arenas.
-  // Each registration deducts MOLTI from the agent wallet; sum actual deposits.
+  // Initialize portfolio with wallet MOLTI as initial capital
+  // The agent's funded balance represents their total MOLTI across all arenas
+  const funded = agent.fundedBalance > 0 ? agent.fundedBalance : 0;
   const regs = await prisma.arenaRegistration.findMany({
     where: { agentId: agent.id, isActive: true },
-    select: { deposit: true },
   });
-  const feePerReg = Number(formatEther(args.deposit));
-  const totalFees = regs.reduce(
-    (s, r) => s + (r.deposit ? Number(r.deposit) / 1e18 : feePerReg),
-    0,
-  );
-  const funded = agent.fundedBalance > 0 ? agent.fundedBalance : feePerReg;
-  const available = Math.max(0, funded - totalFees);
-  const perArena = regs.length > 0 ? available / regs.length : 0;
-  const paperCapital = perArena;
+  const perArena = regs.length > 0 ? funded / regs.length : 0;
+
   console.log(
-    `${TAG} Portfolio init: agent=${agent.id} arena=${arena.id} capital=${paperCapital} (fundedBalance=${agent.fundedBalance} fees=${totalFees} arenas=${regs.length})`,
+    `${TAG} Portfolio init: agent=${agent.id} arena=${arena.id} capital=${perArena} (fundedBalance=${agent.fundedBalance} arenas=${regs.length})`,
   );
+
   const existingPortfolio = await prisma.portfolio.findFirst({
     where: { agentId: agent.id, arenaId: arena.id },
     orderBy: { updatedAt: "desc" },
@@ -174,12 +165,13 @@ export async function handleAgentRegistered(
       data: {
         agentId: agent.id,
         arenaId: arena.id,
-        initialCapital: paperCapital,
-        cashMon: paperCapital,
+        initialCapital: perArena,
+        cashMon: perArena,
         tokenUnits: 0,
+        moltiLocked: 0,
       },
     });
-    // Rebalance existing portfolios for this agent: set initialCapital/cashMon to perArena when tokenUnits=0
+    // Rebalance existing portfolios for this agent: update initialCapital when tokenUnits=0
     const otherPortfolios = await prisma.portfolio.findMany({
       where: { agentId: agent.id, arenaId: { not: arena.id } },
     });
@@ -187,7 +179,7 @@ export async function handleAgentRegistered(
       if (p.tokenUnits === 0) {
         await prisma.portfolio.update({
           where: { id: p.id },
-          data: { initialCapital: paperCapital, cashMon: paperCapital },
+          data: { initialCapital: perArena, cashMon: perArena },
         });
       }
     }
@@ -199,7 +191,6 @@ export async function handleAgentRegistered(
 export interface AgentUnregisteredArgs {
   agentId: bigint;
   arenaId: bigint;
-  withdrawn: bigint;
 }
 
 export async function handleAgentUnregistered(
@@ -210,7 +201,7 @@ export async function handleAgentUnregistered(
   const onChainArenaId = Number(args.arenaId);
 
   console.log(
-    `${TAG} AgentUnregistered: agent=${onChainAgentId} arena=${onChainArenaId} withdrawn=${formatEther(args.withdrawn)} MOLTI`,
+    `${TAG} AgentUnregistered: agent=${onChainAgentId} arena=${onChainArenaId}`,
   );
 
   const agent = await prisma.agent.findUnique({
@@ -308,9 +299,9 @@ export interface TradePlacedArgs {
   agentId: bigint;
   arenaId: bigint;
   action: number;
-  sizePct: bigint;
+  sizePctOrAmount: bigint;
   price: bigint;
-  cashAfter: bigint;
+  moltiLockedAfter: bigint;
   tokenUnitsAfter: bigint;
 }
 
@@ -319,8 +310,13 @@ export async function handleTradePlaced(
   args: TradePlacedArgs,
 ): Promise<void> {
   const actionNames = ["BUY", "SELL", "HOLD"];
+  const action = actionNames[args.action] ?? args.action;
+  const detail =
+    action === "BUY"
+      ? `amount=${formatEther(args.sizePctOrAmount)}`
+      : `sizePct=${formatEther(args.sizePctOrAmount)}`;
   console.log(
-    `${TAG} TradePlaced: agent=${Number(args.agentId)} arena=${Number(args.arenaId)} action=${actionNames[args.action] ?? args.action} sizePct=${formatEther(args.sizePct)} price=${formatEther(args.price)}`,
+    `${TAG} TradePlaced: agent=${Number(args.agentId)} arena=${Number(args.arenaId)} action=${action} ${detail} price=${formatEther(args.price)} moltiLocked=${formatEther(args.moltiLockedAfter)}`,
   );
   // Trade execution is handled by the arena engine off-chain for now.
   // This log is useful for auditing on-chain trades.

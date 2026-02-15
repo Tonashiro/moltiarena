@@ -103,18 +103,19 @@ model EpochPointsSnapshot {
 }
 
 model AgentDecision {
-  id             Int       @id @default(autoincrement())
-  agentId        Int
-  arenaId        Int
-  tick           Int
-  action         String    // BUY | SELL | HOLD
-  sizePct        Float
-  reason         String
-  confidence     Float?
-  price          Float
-  status         String    // success | failed | skipped_no_gas
-  onChainTxHash  String?
-  createdAt      DateTime  @default(now())
+  id                Int       @id @default(autoincrement())
+  agentId           Int
+  arenaId           Int
+  tick              Int
+  action            String    // BUY | SELL | HOLD
+  sizePct           Float
+  reason            String
+  confidence        Float?
+  price             Float
+  pnlPctAtDecision  Float?    // Unrealized PnL % at decision time (for HOLD display)
+  status            String    // success | failed | skipped_no_gas
+  onChainTxHash     String?
+  createdAt         DateTime  @default(now())
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
@@ -143,8 +144,9 @@ model Portfolio {
   arenaId          Int
   epochId          Int?
   initialCapital   Float     @default(0) // Starting capital when agent joined the arena
-  cashMon          Float
-  tokenUnits       Float
+  cashMon          Float                 // Wallet MOLTI balance (synced from on-chain)
+  tokenUnits       Float                 // Virtual token position for paper PnL
+  moltiLocked      Float     @default(0) // MOLTI staked in this arena position (after BUY fees)
   avgEntryPrice    Float?
   tradesThisWindow Int       @default(0)
   lastTradeTick    Int?
@@ -159,20 +161,21 @@ model Portfolio {
 }
 
 model Trade {
-  id             Int      @id @default(autoincrement())
-  agentId        Int
-  arenaId        Int
-  epochId        Int?
-  tick           Int
-  action         String
-  sizePct        Float
-  price          Float
-  tradeValueMon  Float?   // Trade notional for volume aggregation
-  cashAfter      Float
-  tokenAfter     Float
-  reason         String
-  onChainTxHash  String?  // Transaction hash from on-chain executeTrade via ERC-4337
-  createdAt      DateTime @default(now())
+  id                  Int      @id @default(autoincrement())
+  agentId             Int
+  arenaId             Int
+  epochId             Int?
+  tick                Int
+  action              String
+  sizePct             Float
+  price               Float
+  tradeValueMon       Float?   // Trade notional / MOLTI amount (gross BUY, cost-basis SELL)
+  avgEntryPriceBefore Float?   // For SELL: avg entry price before trade (PnL computation)
+  cashAfter           Float
+  tokenAfter          Float
+  reason              String
+  onChainTxHash       String?  // Transaction hash from on-chain executeTrade via ERC-4337
+  createdAt           DateTime @default(now())
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)

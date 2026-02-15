@@ -18,6 +18,7 @@ import {
   fetchTrades,
   fetchTokenTrades,
   fetchEquityHistory,
+  fetchPointsHistory,
   fetchAgentTrades,
   fetchAgentStats,
   fetchAgentDecisions,
@@ -42,6 +43,8 @@ export const queryKeys = {
   agents: () => [...queryKeys.all, "agents"] as const,
   agent: (id: number) => [...queryKeys.all, "agent", id] as const,
   agentEquity: (id: number) => [...queryKeys.all, "agent", id, "equity"] as const,
+  agentPointsHistory: (id: number) =>
+    [...queryKeys.all, "agent", id, "pointsHistory"] as const,
   agentTrades: (id: number) => [...queryKeys.all, "agent", id, "trades"] as const,
   agentStats: (id: number) => [...queryKeys.all, "agent", id, "stats"] as const,
   agentDecisions: (id: number, page?: number, limit?: number) =>
@@ -138,6 +141,16 @@ export function useAgentEquityHistory(agentId: number | null) {
   return useQuery({
     queryKey: queryKeys.agentEquity(agentId ?? 0),
     queryFn: () => fetchEquityHistory(agentId!),
+    enabled: Number.isInteger(agentId) && (agentId ?? 0) > 0,
+    refetchInterval: LIVE_POLL_INTERVAL_MS,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useAgentPointsHistory(agentId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agentPointsHistory(agentId ?? 0),
+    queryFn: () => fetchPointsHistory(agentId!),
     enabled: Number.isInteger(agentId) && (agentId ?? 0) > 0,
     refetchInterval: LIVE_POLL_INTERVAL_MS,
     staleTime: STALE_TIME_MS,

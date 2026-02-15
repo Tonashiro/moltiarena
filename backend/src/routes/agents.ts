@@ -127,6 +127,18 @@ router.get("/:agentId", async (req: Request, res: Response): Promise<void> => {
           }
         }
 
+        // Points from latest LeaderboardSnapshot
+        const latestSnapshot = await prisma.leaderboardSnapshot.findFirst({
+          where: { arenaId: reg.arenaId },
+          orderBy: { createdAt: "desc" },
+        });
+        let pointsVal: number | null = null;
+        if (latestSnapshot) {
+          const rankings = latestSnapshot.rankingsJson as Array<{ agentId: number; points: number }>;
+          const entry = rankings.find((r) => r.agentId === agentId);
+          if (entry) pointsVal = entry.points ?? null;
+        }
+
         // Get agent memory for this arena
         const memory = await prisma.agentMemory.findUnique({
           where: {
@@ -148,6 +160,7 @@ router.get("/:agentId", async (req: Request, res: Response): Promise<void> => {
           cashMon: cashMonVal,
           tokenUnits: tokenUnitsVal,
           initialCapital: initialCapitalVal,
+          points: pointsVal,
           memory: memory
             ? {
                 text: memory.memoryText,
@@ -325,6 +338,98 @@ router.get("/:agentId/equity-history", async (req: Request, res: Response): Prom
 });
 
 /**
+ * GET /agents/:agentId/points-history
+ * Returns points per day with arena breakdown (from LeaderboardSnapshot).
+ * Used for the daily points bar chart.
+ */
+router.get("/:agentId/points-history", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const agentId = parseId(req.params.agentId, "agentId", res);
+    if (agentId === null) return;
+
+    const agent = await prisma.agent.findUnique({
+      where: { id: agentId },
+      include: {
+        arenaRegistrations: {
+          where: { isActive: true },
+          include: { arena: { select: { id: true, name: true } } },
+        },
+      },
+    });
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const arenaIds = agent.arenaRegistrations.map((r) => r.arenaId);
+    const arenaMap = new Map(
+      agent.arenaRegistrations.map((r) => [r.arenaId, r.arena.name ?? `Arena ${r.arenaId}`])
+    );
+
+    const snapshots = await prisma.leaderboardSnapshot.findMany({
+      where: { arenaId: { in: arenaIds } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+      select: {
+        arenaId: true,
+        tick: true,
+        rankingsJson: true,
+        createdAt: true,
+      },
+    });
+
+    // Group by date (YYYY-MM-DD), then by arena. For each (date, arena), keep snapshot with latest tick.
+    const byDate = new Map<
+      string,
+      Map<number, { tick: number; points: number; arenaName: string }>
+    >();
+    for (const snap of snapshots) {
+      const rankings = snap.rankingsJson as Array<{
+        agentId: number;
+        points: number;
+      }>;
+      const entry = rankings.find((r) => r.agentId === agentId);
+      if (!entry) continue;
+
+      const dateStr = snap.createdAt.toISOString().slice(0, 10);
+      let dateMap = byDate.get(dateStr);
+      if (!dateMap) {
+        dateMap = new Map();
+        byDate.set(dateStr, dateMap);
+      }
+      const existing = dateMap.get(snap.arenaId);
+      if (!existing || snap.tick >= existing.tick) {
+        dateMap.set(snap.arenaId, {
+          tick: snap.tick,
+          points: entry.points ?? 0,
+          arenaName: arenaMap.get(snap.arenaId) ?? `Arena ${snap.arenaId}`,
+        });
+      }
+    }
+
+    const days = Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, arenaMapInner]) => {
+        const byArena = Array.from(arenaMapInner.entries()).map(([arenaId, v]) => ({
+          arenaId,
+          arenaName: v.arenaName,
+          points: v.points,
+        }));
+        const totalPoints = byArena.reduce((s, a) => s + a.points, 0);
+        return {
+          date,
+          totalPoints,
+          byArena,
+        };
+      });
+
+    res.json({ agentId, days });
+  } catch (e) {
+    handleRouteError(e, res, "GET /agents/:agentId/points-history");
+  }
+});
+
+/**
  * GET /agents/:agentId/stats
  * Returns aggregated stats: trades count, fees paid, rewards collected, pending rewards.
  */
@@ -345,6 +450,14 @@ router.get("/:agentId/stats", async (req: Request, res: Response): Promise<void>
       where: { agentId },
     });
 
+    // Trade fees: 0.5% of tradeValueMon per trade (matches contract TRADE_FEE_BPS)
+    const tradeFeesResult = await prisma.trade.aggregate({
+      where: { agentId },
+      _sum: { tradeValueMon: true },
+    });
+    const tradeFeesMolti =
+      (tradeFeesResult._sum.tradeValueMon ?? 0) * 0.005;
+
     const epochRegs = await prisma.epochRegistration.findMany({
       where: { agentId },
       include: { epoch: { select: { arenaId: true, endAt: true, status: true } } },
@@ -354,7 +467,7 @@ router.get("/:agentId/stats", async (req: Request, res: Response): Promise<void>
     const pendingRewards: Array<{ epochId: number; arenaId: number; amount: string; endAt: string }> = [];
     for (const reg of epochRegs) {
       const feesWei = reg.feesPaid ? parseFloat(reg.feesPaid) / 1e18 : 0;
-      feesPaid += feesWei;
+      feesPaid += feesWei; // Epoch renewal fees (100 MOLTI per epoch)
       if (reg.rewardClaimed) {
         // Rewards claimed - we'd need to track amount from contract or DB
         rewardsClaimed += 0; // TODO: track claimed amounts
@@ -372,7 +485,7 @@ router.get("/:agentId/stats", async (req: Request, res: Response): Promise<void>
     res.json({
       agentId,
       tradeCount,
-      feesPaid,
+      feesPaid: feesPaid + tradeFeesMolti, // Epoch renewal + trade fees (0.5%)
       rewardsCollected: rewardsClaimed,
       pendingRewards,
     });
@@ -408,27 +521,86 @@ router.get("/:agentId/decisions", async (req: Request, res: Response): Promise<v
         orderBy: { createdAt: "desc" },
         skip,
         take: limit,
-        include: { arena: { select: { id: true, name: true, tokenAddress: true } } },
+        include: {
+          arena: { select: { id: true, name: true, tokenAddress: true } },
+        },
       }),
       prisma.agentDecision.count({ where: { agentId } }),
     ]);
 
+    // Fetch matching trades for BUY/SELL decisions (for moltiAmount and PnL)
+    const decisionKeys = decisions
+      .filter((d) => d.action === "BUY" || d.action === "SELL")
+      .map((d) => ({ agentId, arenaId: d.arenaId, tick: d.tick }));
+    const trades = await prisma.trade.findMany({
+      where: {
+        agentId,
+        OR: decisionKeys.map((k) => ({
+          arenaId: k.arenaId,
+          tick: k.tick,
+        })),
+      },
+    });
+    const tradeByKey = new Map(
+      trades.map((t) => [`${t.arenaId}:${t.tick}`, t])
+    );
+
     res.json({
       agentId,
-      decisions: decisions.map((d) => ({
-        id: d.id,
-        arenaId: d.arenaId,
-        arenaName: d.arena.name,
-        tick: d.tick,
-        action: d.action,
-        sizePct: d.sizePct,
-        price: d.price,
-        reason: d.reason,
-        confidence: d.confidence,
-        status: d.status,
-        onChainTxHash: d.onChainTxHash,
-        createdAt: d.createdAt,
-      })),
+      decisions: decisions.map((d) => {
+        const trade =
+          d.action === "BUY" || d.action === "SELL"
+            ? tradeByKey.get(`${d.arenaId}:${d.tick}`)
+            : undefined;
+
+        // MOLTI amount: from Trade (gross for BUY, cost-basis for SELL)
+        const moltiAmount: number | null =
+          trade?.tradeValueMon != null ? trade.tradeValueMon : null;
+
+        // PnL: for SELL = (tokensSold * price) - costBasis (MOLTI); for BUY = null; for HOLD = pnlPctAtDecision (%)
+        let pnl: number | null = null;
+        let pnlUnit: "MOLTI" | "%" | null = null;
+        if (d.action === "SELL" && trade) {
+          const costBasis = trade.tradeValueMon ?? 0;
+          const sizePct = trade.sizePct;
+          const avgEntry = trade.avgEntryPriceBefore;
+          if (sizePct > 0) {
+            let tokensSold: number;
+            if (sizePct >= 1 && avgEntry != null && avgEntry > 0) {
+              // Full sell: tokensSold = costBasis / avgEntryPrice
+              tokensSold = costBasis / avgEntry;
+            } else if (sizePct < 1) {
+              tokensSold = (trade.tokenAfter * sizePct) / (1 - sizePct);
+            } else {
+              tokensSold = 0;
+            }
+            const valueAtSell = tokensSold * trade.price;
+            pnl = valueAtSell - costBasis;
+            pnlUnit = "MOLTI";
+          }
+        } else if (d.action === "HOLD" && d.pnlPctAtDecision != null) {
+          pnl = d.pnlPctAtDecision;
+          pnlUnit = "%";
+        }
+
+        return {
+          id: d.id,
+          arenaId: d.arenaId,
+          arenaName: d.arena.name,
+          tick: d.tick,
+          action: d.action,
+          sizePct: d.sizePct,
+          price: d.price,
+          moltiAmount,
+          pnl,
+          pnlUnit,
+          reason: d.reason,
+          confidence: d.confidence,
+          status: d.status,
+          onChainTxHash: d.onChainTxHash,
+          createdAt: d.createdAt,
+        };
+      }),
       pagination: {
         page,
         limit,
@@ -706,6 +878,18 @@ router.post("/sync", async (req: Request, res: Response): Promise<void> => {
           profileJson,
           creationTxHash: txHash ?? null,
         },
+      });
+    }
+
+    // Auto-approve MoltiArena to spend MOLTI from the agent's wallet (infinite allowance).
+    // This is fire-and-forget: approval failures are logged but don't block the sync response.
+    const keyForApproval = encryptedSignerKey ?? agent.encryptedSignerKey;
+    if (keyForApproval) {
+      approveMoltiForArena({ encryptedSignerKey: keyForApproval }).catch((err) => {
+        console.warn(
+          `[agents/sync] Auto-approve MOLTI failed for agent ${agent!.id}:`,
+          err instanceof Error ? err.message : err,
+        );
       });
     }
 

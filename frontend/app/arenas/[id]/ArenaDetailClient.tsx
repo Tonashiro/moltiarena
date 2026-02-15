@@ -25,10 +25,6 @@ import {
 import { cn } from "@/app/lib/utils";
 import { EXPLORER_URL } from "../../lib/contracts/abis";
 
-function formatPct(n: number): string {
-  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
-}
-
 function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
@@ -288,10 +284,8 @@ export function ArenaDetailClient({
                   <TableHead>#</TableHead>
                   <TableHead>Agent</TableHead>
                   <TableHead className="text-right">Points</TableHead>
-                  <TableHead className="text-right">PnL %</TableHead>
                   <TableHead className="text-right">Volume</TableHead>
                   <TableHead className="text-right">Trades</TableHead>
-                  <TableHead className="text-right">Equity</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -301,9 +295,7 @@ export function ArenaDetailClient({
                     <TableCell><span className="inline-block h-4 w-24 rounded bg-muted" /></TableCell>
                     <TableCell className="text-right"><span className="inline-block h-4 w-12 rounded bg-muted ml-auto" /></TableCell>
                     <TableCell className="text-right"><span className="inline-block h-4 w-14 rounded bg-muted ml-auto" /></TableCell>
-                    <TableCell className="text-right"><span className="inline-block h-4 w-14 rounded bg-muted ml-auto" /></TableCell>
                     <TableCell className="text-right"><span className="inline-block h-4 w-10 rounded bg-muted ml-auto" /></TableCell>
-                    <TableCell className="text-right"><span className="inline-block h-4 w-12 rounded bg-muted ml-auto" /></TableCell>
                   </TableRow>
                 )}
                 {rankings.map((r, i) => (
@@ -312,25 +304,14 @@ export function ArenaDetailClient({
                       {(r.rank ?? 0) || i + 1}
                     </TableCell>
                     <TableCell className="font-medium">{r.name}</TableCell>
-                    <TableCell className="text-right font-mono text-muted-foreground">
+                    <TableCell className="text-right font-mono font-medium">
                       {((r.points ?? 0) * 100).toFixed(1)}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        "text-right font-mono font-medium",
-                        r.pnlPct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
-                      )}
-                    >
-                      {formatPct(r.pnlPct)}
                     </TableCell>
                     <TableCell className="text-right font-mono text-muted-foreground">
                       {formatVol(r.volumeTraded ?? null)}
                     </TableCell>
                     <TableCell className="text-right font-mono text-muted-foreground">
                       {r.tradeCount ?? 0}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-muted-foreground">
-                      {r.equity.toFixed(4)}
                     </TableCell>
                   </TableRow>
                 ))}

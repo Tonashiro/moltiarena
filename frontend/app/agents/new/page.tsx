@@ -67,7 +67,6 @@ export default function NewAgentPage() {
     const result = await registerOnChain(
       BigInt(form.created.onChainId),
       BigInt(arena.onChainId),
-      BigInt(0)
     );
     setRegisteringArenaId(null);
     if (result) {

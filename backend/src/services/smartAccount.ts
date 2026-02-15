@@ -10,8 +10,6 @@
 import {
   createPublicClient,
   http,
-  readContract,
-  getBalance,
   maxUint256,
   type Hex,
   type Address,
@@ -218,33 +216,46 @@ export async function getSmartAccountAddress(
   return simpleAccount.address;
 }
 
-// ─── On-Chain Deposit & Trade Execution ───────────────────────────────
+// ─── On-Chain Balance & Portfolio Reads ───────────────────────────────
+
+/** Get MOLTI token balance of an address (e.g. smart account). */
+export async function getMoltiBalance(address: Address): Promise<bigint> {
+  const client = getPublicClient();
+  return client.readContract({
+    address: MOLTI_TOKEN_ADDRESS,
+    abi: MOLTI_TOKEN_ABI,
+    functionName: "balanceOf",
+    args: [address],
+  });
+}
 
 /** Get native MON balance of an address (e.g. smart account). */
 export async function getMonBalance(address: Address): Promise<bigint> {
   const client = getPublicClient();
-  return getBalance(client, { address });
+  return client.getBalance({ address });
 }
 
-/** Read the contract's portfolio cashMolti for an agent in an arena */
+/** Read the contract portfolio (moltiLocked + tokenUnits) for an agent in an arena. */
 export async function getContractPortfolio(
   agentOnChainId: number,
   arenaOnChainId: number,
-): Promise<{ cashMolti: bigint; tokenUnits: bigint }> {
+): Promise<{ moltiLocked: bigint; tokenUnits: bigint }> {
   const client = getPublicClient();
-  const pf = await readContract(client, {
+  const pf = await client.readContract({
     address: MOLTI_ARENA_ADDRESS,
     abi: MOLTI_ARENA_ABI,
     functionName: "getPortfolio",
     args: [BigInt(agentOnChainId), BigInt(arenaOnChainId)],
   });
-  return { cashMolti: pf.cashMolti, tokenUnits: pf.tokenUnits };
+  return { moltiLocked: pf.moltiLocked, tokenUnits: pf.tokenUnits };
 }
+
+// ─── MOLTI Approval ──────────────────────────────────────────────────
 
 /**
  * Approve MoltiArena to spend MOLTI from the agent's smart account.
- * Required for autoRenewEpoch (contract pulls 100 MOLTI from agent wallet each epoch).
- * Approves max uint256 so renewals work without repeated approvals.
+ * Called once at agent creation with maxUint256 so all future BUYs and
+ * epoch renewals work without repeated approvals.
  */
 export async function approveMoltiForArena(params: {
   encryptedSignerKey: string;
@@ -268,62 +279,7 @@ export async function approveMoltiForArena(params: {
   }
 }
 
-/**
- * Deposit MOLTI from the agent's smart account into the MoltiArena contract.
- * Required when the agent registered with 0 deposit — funds the contract portfolio
- * so executeTrade can run (BUY needs cashMolti > 0).
- */
-export async function depositMoltiToArena(params: {
-  encryptedSignerKey: string;
-  agentOnChainId: number;
-  arenaOnChainId: number;
-  amountWei: bigint;
-}): Promise<Hex | null> {
-  const { encryptedSignerKey, agentOnChainId, arenaOnChainId, amountWei } = params;
-  if (amountWei <= 0n) return null;
-
-  try {
-    const client = await getSmartAccountClient(encryptedSignerKey);
-
-    // Batch approve + depositToArena in one UserOperation
-    const txHash = await client.sendTransaction({
-      calls: [
-        {
-          to: MOLTI_TOKEN_ADDRESS,
-          data: encodeFunctionData({
-            abi: MOLTI_TOKEN_ABI,
-            functionName: "approve",
-            args: [MOLTI_ARENA_ADDRESS, amountWei],
-          }),
-        },
-        {
-          to: MOLTI_ARENA_ADDRESS,
-          data: encodeFunctionData({
-            abi: MOLTI_ARENA_ABI,
-            functionName: "depositToArena",
-            args: [
-              BigInt(agentOnChainId),
-              BigInt(arenaOnChainId),
-              amountWei,
-            ],
-          }),
-        },
-      ],
-    });
-
-    console.log(
-      `[smartAccount] Deposited to arena: agent=${agentOnChainId} arena=${arenaOnChainId} ` +
-        `amount=${amountWei} tx=${txHash}`,
-    );
-    return txHash;
-  } catch (err) {
-    console.error(
-      `[smartAccount] depositToArena FAILED: agent=${agentOnChainId} arena=${arenaOnChainId}`,
-      err,
-    );
-    return null;
-  }
-}
+// ─── On-Chain Trade Execution ─────────────────────────────────────────
 
 /** Contract Action enum: BUY=0, SELL=1, HOLD=2 */
 function actionToEnum(action: "BUY" | "SELL" | "HOLD"): number {
@@ -339,7 +295,6 @@ function actionToEnum(action: "BUY" | "SELL" | "HOLD"): number {
 
 /** Convert a 0-1 decimal percentage to 1e18-scaled bigint (e.g. 0.20 → 200000000000000000n) */
 function toWei18(value: number): bigint {
-  // Multiply by 1e18, using string to avoid floating point precision loss
   const scaled = Math.round(value * 1e18);
   return BigInt(scaled);
 }
@@ -350,13 +305,19 @@ export interface OnChainTradeParams {
   arenaOnChainId: number;
   epochOnChainId: number;
   action: "BUY" | "SELL";
-  sizePct: number;  // 0-1 decimal
-  price: number;    // decimal token price
+  sizePct: number;       // 0-1 decimal (SELL only)
+  buyAmountWei?: bigint; // gross MOLTI amount from wallet (BUY only)
+  price: number;         // decimal token price
   tick: number;
 }
 
 /**
  * Submit an on-chain executeTrade call via the agent's ERC-4337 smart account.
+ *
+ * BUY: contract pulls buyAmountWei MOLTI from wallet, deducts fee, credits tokens.
+ *      Requires infinite approval (done at agent creation).
+ * SELL: contract returns proportional moltiLocked to wallet, deducts fee.
+ *
  * Returns the transaction hash, or null if the call fails.
  */
 export async function executeOnChainTrade(params: OnChainTradeParams): Promise<Hex | null> {
@@ -367,6 +328,7 @@ export async function executeOnChainTrade(params: OnChainTradeParams): Promise<H
     epochOnChainId,
     action,
     sizePct,
+    buyAmountWei,
     price,
     tick,
   } = params;
@@ -375,12 +337,13 @@ export async function executeOnChainTrade(params: OnChainTradeParams): Promise<H
     const client = await getSmartAccountClient(encryptedSignerKey);
 
     const actionEnum = actionToEnum(action);
-    const sizePctWei = toWei18(sizePct);
+    const sizePctWei = action === "SELL" ? toWei18(sizePct) : 0n;
+    const buyAmount = action === "BUY" ? (buyAmountWei ?? 0n) : 0n;
     const priceWei = toWei18(price);
 
     console.log(
       `[smartAccount] Executing on-chain trade: agent=${agentOnChainId} arena=${arenaOnChainId} epoch=${epochOnChainId} ` +
-        `action=${action}(${actionEnum}) sizePct=${sizePct}→${sizePctWei} price=${price}→${priceWei} tick=${tick}`,
+        `action=${action}(${actionEnum}) sizePct=${sizePctWei} buyAmount=${buyAmount} price=${price}→${priceWei} tick=${tick}`,
     );
 
     const txHash = await client.sendTransaction({
@@ -394,6 +357,7 @@ export async function executeOnChainTrade(params: OnChainTradeParams): Promise<H
           BigInt(epochOnChainId),
           actionEnum,
           sizePctWei,
+          buyAmount,
           priceWei,
           tick,
         ],

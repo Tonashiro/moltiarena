@@ -152,7 +152,6 @@ export const MOLTI_ARENA_ABI = [
     inputs: [
       { name: "agentId", type: "uint256" },
       { name: "arenaId", type: "uint256" },
-      { name: "deposit", type: "uint256" },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -177,18 +176,6 @@ export const MOLTI_ARENA_ABI = [
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "view",
   },
-  // ── Deposit (for agents that registered with 0) ──
-  {
-    type: "function",
-    name: "depositToArena",
-    inputs: [
-      { name: "agentId", type: "uint256" },
-      { name: "arenaId", type: "uint256" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
   // ── View helpers ──
   {
     type: "function",
@@ -202,7 +189,7 @@ export const MOLTI_ARENA_ABI = [
         name: "",
         type: "tuple",
         components: [
-          { name: "cashMolti", type: "uint256" },
+          { name: "moltiLocked", type: "uint256" },
           { name: "tokenUnits", type: "uint256" },
           { name: "avgEntryPrice", type: "uint256" },
           { name: "tradeCount", type: "uint32" },
@@ -286,7 +273,6 @@ export const MOLTI_ARENA_ABI = [
     inputs: [
       { name: "agentId", type: "uint256", indexed: true },
       { name: "arenaId", type: "uint256", indexed: true },
-      { name: "deposit", type: "uint256", indexed: false },
     ],
   },
   {
@@ -295,7 +281,6 @@ export const MOLTI_ARENA_ABI = [
     inputs: [
       { name: "agentId", type: "uint256", indexed: true },
       { name: "arenaId", type: "uint256", indexed: true },
-      { name: "withdrawn", type: "uint256", indexed: false },
     ],
   },
   {
@@ -305,9 +290,9 @@ export const MOLTI_ARENA_ABI = [
       { name: "agentId", type: "uint256", indexed: true },
       { name: "arenaId", type: "uint256", indexed: true },
       { name: "action", type: "uint8", indexed: false },
-      { name: "sizePct", type: "uint256", indexed: false },
+      { name: "sizePctOrAmount", type: "uint256", indexed: false },
       { name: "price", type: "uint256", indexed: false },
-      { name: "cashAfter", type: "uint256", indexed: false },
+      { name: "moltiLockedAfter", type: "uint256", indexed: false },
       { name: "tokenUnitsAfter", type: "uint256", indexed: false },
     ],
   },

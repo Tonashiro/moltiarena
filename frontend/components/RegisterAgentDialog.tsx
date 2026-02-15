@@ -22,8 +22,7 @@ import { toastError, toastSuccess } from "@/app/lib/toast";
 import type { AgentListItem, ArenaListItem } from "@/app/lib/api";
 import { formatEther } from "viem";
 
-/** No fee to register — deposit 0 MOLTI */
-const REGISTRATION_DEPOSIT = BigInt(0);
+/* No deposit required for registration — MOLTI is pulled on BUY */
 
 /* ────────────────────────────────────────────────────────────────────
  * Mode A: Register an agent to a specific arena
@@ -132,7 +131,6 @@ export function RegisterAgentDialog(props: RegisterDialogProps) {
       const result = await register(
         BigInt(onChainAgentId),
         BigInt(onChainArenaId),
-        REGISTRATION_DEPOSIT,
       );
 
       setRegisteringId(null);

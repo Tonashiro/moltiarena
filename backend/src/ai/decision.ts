@@ -68,6 +68,14 @@ export interface DecideTradeInput {
     avgEntryPrice: number | null;
     tradesThisWindow: number;
     lastTradeTick: number | null;
+    /** Current tick (to compute ticks since last trade). */
+    currentTick: number;
+    /** Total portfolio value (cashMon + tokenUnits * price). */
+    equity: number;
+    /** Token exposure as % of equity (0–1). */
+    positionPct: number;
+    /** Initial capital for this arena (for context). */
+    initialCapital: number;
   };
   profile: Pick<
     AgentProfileConfig,
@@ -84,6 +92,12 @@ Obey the creator's constraints and filters. Respect maxTradePct, maxPositionPct,
 
 If the creator provides custom rules (Rules section), treat them as high-priority trading guidelines. Apply them alongside the goal and style. If a custom rule conflicts with a hard constraint (maxTradePct, maxPositionPct, cooldown, maxTradesPerWindow), the hard constraint always wins. Custom rules affect strategy, not hard limits.
 
+Portfolio: c=cash (available to BUY), t=tokens held (can SELL), eq=equity, posPct=token exposure % (0=all cash, 1=all tokens), init=initial capital, tsl=ticks since last trade.
+- CRITICAL: When posPct exceeds maxPositionPct, you MUST output action=SELL with sizePct > 0 (e.g. 0.09 for 9%) to trim exposure. Do NOT output HOLD when you need to reduce exposure — HOLD means do nothing; use SELL to actually trim.
+- Prefer HOLD when tsl is low (1–2 ticks) and little has changed. Avoid overtrading.
+- Only BUY/SELL when there is a clear new signal or opportunity. If market data and your position are similar to last tick, HOLD.
+- posPct tells you current exposure; if posPct > maxPositionPct, SELL to comply — do not describe trimming in the reason while outputting HOLD.
+
 Market data codes:
 - Events: B=Buy, S=Sell, W=Swap
 - Momentum: B=bullish, S=bearish, N=neutral
@@ -94,7 +108,8 @@ Market data codes:
 Respond with exactly this JSON object (no markdown, no code block):
 {"action":"BUY"|"SELL"|"HOLD","sizePct":<0-1>,"confidence":<0-1>,"reason":"<short explanation>"}
 
-When action is BUY or SELL, sizePct MUST be > 0 (e.g. 0.05 for 5%, 0.2 for 20%). Use 0 only for HOLD.`;
+When action is BUY or SELL, sizePct MUST be > 0 (e.g. 0.09 for 9% trim). Use 0 only for HOLD.
+If posPct > maxPositionPct and you want to trim: action=SELL, sizePct=amount to trim (e.g. 0.09), NOT HOLD.`;
 
 function buildUserMessage(input: DecideTradeInput): string {
   // Round numbers to reduce token usage (price to 6 decimals, others to 2)
@@ -128,15 +143,25 @@ function buildUserMessage(input: DecideTradeInput): string {
     pv: input.market.priceVolatility, // priceVolatility: "H"|"M"|"L"
   };
 
-  // Compact portfolio format
+  // ticksSinceLastTrade: null if never traded, else currentTick - lastTradeTick
+  const ticksSinceLastTrade =
+    input.portfolio.lastTradeTick != null
+      ? input.portfolio.currentTick - input.portfolio.lastTradeTick
+      : null;
+
+  // Compact portfolio format (c=cash to buy, t=tokens held, eq=equity, posPct=token exposure %, tsl=ticks since last trade)
   const portfolioData = {
-    c: round(input.portfolio.cashMon, 2), // cashMon
-    t: round(input.portfolio.tokenUnits, 2), // tokenUnits
+    c: round(input.portfolio.cashMon, 2), // cash available to BUY
+    t: round(input.portfolio.tokenUnits, 2), // tokens held (can SELL)
+    eq: round(input.portfolio.equity, 2), // total portfolio value
+    posPct: round(input.portfolio.positionPct, 2), // token exposure % (0=all cash, 1=all tokens)
+    init: round(input.portfolio.initialCapital, 2), // initial capital
     aep: input.portfolio.avgEntryPrice
       ? round(input.portfolio.avgEntryPrice, 6)
-      : null, // avgEntryPrice
-    tw: input.portfolio.tradesThisWindow, // tradesThisWindow
-    ltt: input.portfolio.lastTradeTick, // lastTradeTick
+      : null, // avg entry price
+    tw: input.portfolio.tradesThisWindow, // trades this window
+    ltt: input.portfolio.lastTradeTick, // tick of last trade
+    tsl: ticksSinceLastTrade, // ticks since last trade (null if never)
   };
 
   const parts: string[] = [

@@ -201,9 +201,10 @@ export function createMemoryService(
             where: { agentId, arenaId },
             orderBy: { tick: "asc" },
           }),
-          // Current portfolio state
-          prisma.portfolio.findUnique({
-            where: { agentId_arenaId: { agentId, arenaId } },
+          // Current portfolio state (latest by updatedAt)
+          prisma.portfolio.findFirst({
+            where: { agentId, arenaId },
+            orderBy: { updatedAt: "desc" },
           }),
           // Recent leaderboard snapshots to track performance over time
           prisma.leaderboardSnapshot.findMany({
