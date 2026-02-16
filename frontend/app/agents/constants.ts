@@ -13,7 +13,7 @@ export const AGENT_FIELD_TOOLTIPS: Record<string, string> = {
   cooldownTicks:
     "Minimum number of ticks (each tick ≈ 5 min) the agent must wait between consecutive trades. Higher values reduce trading frequency.",
   maxTradesPerWindow:
-    "Maximum number of trades the agent can execute within a rolling time window. Prevents excessive trading activity.",
+    "Maximum number of trades the agent can execute within a rolling 6h window. Prevents excessive trading activity.",
   minEvents1h:
     "Minimum number of market events (swaps, buys, sells) required in the last hour for the agent to consider trading. Set to 0 to allow trading regardless of activity.",
   minVolumeMon1h:
