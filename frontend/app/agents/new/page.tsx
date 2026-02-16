@@ -48,12 +48,6 @@ export default function NewAgentPage() {
     [arenasData?.arenas],
   );
 
-  const { data: agentData } = useAgent(form.created?.agentId ?? null);
-  const registeredArenaIds = useMemo(
-    () => new Set(agentData?.arenas?.map((a) => a.arenaId) ?? []),
-    [agentData?.arenas],
-  );
-
   const form = useAgentCreationForm({
     address: address ?? undefined,
     creationFee: creationFee as bigint | undefined,
@@ -61,6 +55,12 @@ export default function NewAgentPage() {
     createAgent,
     afterAgentCreated,
   });
+
+  const { data: agentData } = useAgent(form.created?.agentId ?? null);
+  const registeredArenaIds = useMemo(
+    () => new Set(agentData?.arenas?.map((a) => a.arenaId) ?? []),
+    [agentData?.arenas],
+  );
 
   const [registeringArenaId, setRegisteringArenaId] = useState<number | null>(
     null,
