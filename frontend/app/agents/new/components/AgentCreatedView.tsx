@@ -86,7 +86,7 @@ export function AgentCreatedView({
         <CardHeader>
           <CardTitle>Register to arenas</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Fund your agent with MOLTI (100+ for epoch renewal) and MON (1+ for gas) before registering.
+            Fund your agent with 100+ MOLTI and 1+ MON first, then register. Registration requires epoch renewal; agents without funding cannot trade.
           </p>
         </CardHeader>
         <CardContent>
@@ -153,15 +153,15 @@ export function AgentCreatedView({
                         registeringArenaId === arena.id ||
                         isRegistering ||
                         !arena.onChainId ||
-                        (canCheckFunding && !hasSufficientFunding)
+                        !hasSufficientFunding
                       }
                     >
                       {registeringArenaId === arena.id
                         ? "Registering..."
                         : !arena.onChainId
                           ? "No chain ID"
-                          : canCheckFunding && !hasSufficientFunding
-                            ? "Fund first"
+                          : !hasSufficientFunding
+                            ? (canCheckFunding ? "Fund first" : "Loading...")
                             : "Register"}
                     </Button>
                   )}

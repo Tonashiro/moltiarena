@@ -79,9 +79,20 @@ export function applyGuardrails(input: GuardrailsInput): TradeDecision {
     }
   }
 
-  // When tick resets (ticksSince < 0), treat as fresh window and ignore tradesThisWindow
+  // tradesThisWindow is cumulative and never resets in DB. Treat "window" as last N ticks:
+  // - ticksSince < 0: tick counter reset (e.g. server restart) → fresh window
+  // - ticksSince >= WINDOW_TICKS: no trade in a long time → fresh window
+  // - otherwise: use cumulative count (legacy; may block after many trades)
+  // Window length: TRADES_WINDOW_TICKS env, or 1 hour in ticks from TICK_SECONDS
+  const tickSeconds = Number(process.env.TICK_SECONDS) || 60;
+  const WINDOW_TICKS =
+    Number(process.env.TRADES_WINDOW_TICKS) || Math.max(1, Math.round(3600 / tickSeconds));
   const effectiveTradesThisWindow =
-    ticksSince !== null && ticksSince < 0 ? 0 : portfolio.tradesThisWindow;
+    ticksSince === null
+      ? 0 // no prior trade
+      : ticksSince < 0 || ticksSince >= WINDOW_TICKS
+        ? 0 // fresh window
+        : portfolio.tradesThisWindow;
   if (effectiveTradesThisWindow >= constraints.maxTradesPerWindow) {
     return toHold(modelDecision, "guardrail: max trades per window");
   }

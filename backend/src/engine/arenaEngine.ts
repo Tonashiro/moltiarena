@@ -14,7 +14,7 @@ import {
   getMonBalance,
   getMoltiBalance,
 } from "../services/smartAccount.js";
-import { getCurrentEpoch } from "../services/epochService.js";
+import { getCurrentEpoch, autoRenewAgentsForEpoch } from "../services/epochService.js";
 
 const MON_BALANCE_THRESHOLD_WEI = BigInt(
   Math.floor(1 * 1e18)
@@ -512,6 +512,38 @@ export function startArenaEngine(deps: ArenaEngineDeps): { stop: () => void } {
 
       if (DEBUG && arenas.length > 0) {
         console.log(`[arenaEngine] tick: ${arenas.length} arena(s) with active agents`);
+      }
+
+      // Try to renew any agents registered but not renewed (e.g. registered before funding, then funded later)
+      const depsEpoch = { prisma: deps.prisma };
+      for (const arena of arenas) {
+        const snapshot = deps.marketStore.get(arena.tokenAddress);
+        if (!snapshot || arena.onChainId == null) continue;
+        const currentEpoch = await getCurrentEpoch(depsEpoch, arena.id);
+        if (!currentEpoch || currentEpoch.onChainEpochId == null) continue;
+        const renewedCount = await deps.prisma.epochRegistration.count({
+          where: {
+            epochId: currentEpoch.id,
+            agentId: { in: arena.arenaRegistrations.map((r) => r.agentId) },
+          },
+        });
+        const registeredCount = arena.arenaRegistrations.length;
+        if (renewedCount < registeredCount) {
+          try {
+            const { renewed } = await autoRenewAgentsForEpoch(
+              depsEpoch,
+              arena.id,
+              arena.onChainId,
+              currentEpoch.id,
+              currentEpoch.onChainEpochId,
+            );
+            if (renewed > 0) {
+              console.log(`[arenaEngine] renewed ${renewed} agent(s) for arena ${arena.id} (catch-up)`);
+            }
+          } catch (err) {
+            console.warn(`[arenaEngine] catch-up renewal for arena ${arena.id} failed:`, err instanceof Error ? err.message : err);
+          }
+        }
       }
 
       // Build (agent, arena) contexts then group by agent for one AI call per agent
