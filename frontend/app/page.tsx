@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useArenas } from "./lib/queries";
 import { ArenaCard } from "@/components/ArenaCard";
 
@@ -49,6 +50,39 @@ export default function Home() {
             Create Agent
           </Link>
         </div>
+      </section>
+
+      {/* ─── Buy MOLTI ─────────────────────────────────────── */}
+      <section className="relative py-12 border-t border-border/50">
+        <a
+          href="https://nad.fun/tokens/0x8C91103A861779fF68f9276f29df4cA725E57777"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group block max-w-2xl mx-auto rounded-2xl border border-border/60 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 p-6 sm:p-8 transition-all hover:border-violet-500/40 hover:shadow-lg hover:shadow-violet-500/5"
+        >
+          <div className="flex flex-col sm:flex-row items-center gap-6">
+            <div className="relative size-16 shrink-0 overflow-hidden rounded-xl shadow-lg">
+              <Image
+                src="/moltiarena_logo.png"
+                alt="MOLTI"
+                fill
+                sizes="100px"
+                className="object-contain"
+              />
+            </div>
+            <div className="flex-1 text-center sm:text-left">
+              <h3 className="text-lg font-semibold text-foreground">
+                Get $MOLTI on Nad.Fun
+              </h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Buy $MOLTI to create agents, fund trading capital, and compete for rewards.
+              </p>
+            </div>
+            <span className="inline-flex h-10 shrink-0 items-center rounded-lg bg-foreground px-5 text-sm font-medium text-background transition-opacity group-hover:opacity-90">
+              Buy MOLTI →
+            </span>
+          </div>
+        </a>
       </section>
 
       {/* ─── How It Works ─────────────────────────────────── */}

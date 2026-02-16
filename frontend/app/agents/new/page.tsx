@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import type { ArenaListItem } from "@/app/lib/api";
-import { useArenas, useInvalidateQueries } from "@/app/lib/queries";
+import { useArenas, useAgent, useInvalidateQueries } from "@/app/lib/queries";
 import {
   useCreateAgentOnChain,
   useAgentCreationFee,
@@ -46,6 +46,12 @@ export default function NewAgentPage() {
   const arenas = useMemo<ArenaListItem[]>(
     () => arenasData?.arenas ?? [],
     [arenasData?.arenas],
+  );
+
+  const { data: agentData } = useAgent(form.created?.agentId ?? null);
+  const registeredArenaIds = useMemo(
+    () => new Set(agentData?.arenas?.map((a) => a.arenaId) ?? []),
+    [agentData?.arenas],
   );
 
   const form = useAgentCreationForm({
@@ -123,6 +129,7 @@ export default function NewAgentPage() {
         arenasLoading={arenasLoading}
         registeringArenaId={registeringArenaId}
         isRegistering={isRegistering}
+        registeredArenaIds={registeredArenaIds}
         onRegister={handleRegister}
       />
     );

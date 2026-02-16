@@ -5,6 +5,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import { formatEther } from "viem";
+import { autoRenewAgentsForEpoch, getCurrentEpoch } from "../services/epochService.js";
 
 const TAG = "[indexer]";
 
@@ -181,6 +182,32 @@ export async function handleAgentRegistered(
           where: { id: p.id },
           data: { initialCapital: perArena, cashMon: perArena },
         });
+      }
+    }
+  }
+
+  // Renew agent for current epoch so they participate immediately (no 24h wait)
+  const arenaOnChainId = arena.onChainId;
+  if (arenaOnChainId != null) {
+    const deps = { prisma };
+    const currentEpoch = await getCurrentEpoch(deps, arena.id);
+    if (currentEpoch && currentEpoch.onChainEpochId != null) {
+      try {
+        const { renewed, skipped } = await autoRenewAgentsForEpoch(
+          deps,
+          arena.id,
+          arenaOnChainId,
+          currentEpoch.id,
+          currentEpoch.onChainEpochId
+        );
+        console.log(
+          `${TAG} Renewal after register: agent=${onChainAgentId} arena=${onChainArenaId} renewed=${renewed} skipped=${skipped}`
+        );
+      } catch (err) {
+        console.warn(
+          `${TAG} Renewal after register failed agent=${onChainAgentId} arena=${onChainArenaId}:`,
+          err instanceof Error ? err.message : err
+        );
       }
     }
   }

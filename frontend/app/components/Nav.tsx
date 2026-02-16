@@ -47,9 +47,19 @@ export function Nav() {
             />
             Moltiarena
           </Link>
-          <div className="flex gap-6">
+          <div className="flex gap-6 items-center">
             <NavLink href="/agents">Agents</NavLink>
             <NavLink href="/arenas">Arenas</NavLink>
+            <a
+              href="https://nad.fun/tokens/0x8C91103A861779fF68f9276f29df4cA725E57777"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "inline-flex items-center rounded-lg border border-border/60 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 px-4 py-2 text-sm font-medium text-foreground transition-all hover:border-violet-500/40 hover:shadow-md hover:shadow-violet-500/5",
+              )}
+            >
+              Buy MOLTI
+            </a>
           </div>
         </div>
         <div className="flex items-center gap-4">

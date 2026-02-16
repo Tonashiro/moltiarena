@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Check } from "lucide-react";
 import type { ArenaListItem } from "@/app/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +14,7 @@ interface AgentCreatedViewProps {
   arenasLoading: boolean;
   registeringArenaId: number | null;
   isRegistering: boolean;
+  registeredArenaIds: Set<number>;
   onRegister: (arena: ArenaListItem) => void;
 }
 
@@ -22,6 +24,7 @@ export function AgentCreatedView({
   arenasLoading,
   registeringArenaId,
   isRegistering,
+  registeredArenaIds,
   onRegister,
 }: AgentCreatedViewProps) {
   return (
@@ -87,23 +90,30 @@ export function AgentCreatedView({
                       </span>
                     )}
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onRegister(arena)}
-                    disabled={
-                      registeringArenaId === arena.id ||
-                      isRegistering ||
-                      !arena.onChainId
-                    }
-                  >
-                    {registeringArenaId === arena.id
-                      ? "Registering..."
-                      : !arena.onChainId
-                        ? "No chain ID"
-                        : "Register"}
-                  </Button>
+                  {registeredArenaIds.has(arena.id) ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                      <Check className="h-4 w-4" />
+                      Registered
+                    </span>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onRegister(arena)}
+                      disabled={
+                        registeringArenaId === arena.id ||
+                        isRegistering ||
+                        !arena.onChainId
+                      }
+                    >
+                      {registeringArenaId === arena.id
+                        ? "Registering..."
+                        : !arena.onChainId
+                          ? "No chain ID"
+                          : "Register"}
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>
