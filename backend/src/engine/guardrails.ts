@@ -72,7 +72,8 @@ export function applyGuardrails(input: GuardrailsInput): TradeDecision {
 
   if (portfolio.lastTradeTick !== null) {
     const ticksSince = snapshot.tick - portfolio.lastTradeTick;
-    if (ticksSince < constraints.cooldownTicks) {
+    // If ticksSince < 0, the tick counter likely reset (e.g. server restart); treat cooldown as satisfied
+    if (ticksSince >= 0 && ticksSince < constraints.cooldownTicks) {
       return toHold(modelDecision, "guardrail: cooldown");
     }
   }

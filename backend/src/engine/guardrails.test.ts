@@ -96,6 +96,14 @@ describe("applyGuardrails", () => {
     expect(r.action).toBe("BUY");
   });
 
+  it("allows trade when ticksSince < 0 (tick counter reset, e.g. server restart)", () => {
+    const r = run({
+      snapshot: { ...baseSnapshot, tick: 2 },
+      portfolio: { ...basePortfolio, lastTradeTick: 150 },
+    });
+    expect(r.action).toBe("BUY");
+  });
+
   it("=> HOLD when tradesThisWindow >= maxTradesPerWindow", () => {
     const r = run({
       portfolio: { ...basePortfolio, tradesThisWindow: 10 },
