@@ -1132,6 +1132,11 @@ async function runEpochTransitionDemo(
   const nowSec = Math.floor(Date.now() / 1000);
   const phase = await getEpochPhaseOnChain(arenaOnChainId, nowSec);
 
+  // Ensure DB has row for active on-chain epoch so getCurrentEpoch can find it
+  if (phase.active != null) {
+    await ensureEpochRowForOnChainEpoch(deps, arenaId, arenaOnChainId, phase.active, "active");
+  }
+
   if (phase.toEnd != null) {
     const dbEpoch = await ensureEpochRowForOnChainEpoch(
       deps,
@@ -1203,6 +1208,11 @@ async function runEpochTransitionDaily(
 ): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
   const phase = await getEpochPhaseOnChain(arenaOnChainId, nowSec);
+
+  // Ensure DB has row for active on-chain epoch so getCurrentEpoch can find it
+  if (phase.active != null) {
+    await ensureEpochRowForOnChainEpoch(deps, arenaId, arenaOnChainId, phase.active, "active");
+  }
 
   if (phase.toEnd != null) {
     const dbEpoch = await ensureEpochRowForOnChainEpoch(
