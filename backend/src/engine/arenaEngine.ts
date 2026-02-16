@@ -17,8 +17,8 @@ import {
 import { getCurrentEpoch } from "../services/epochService.js";
 
 const MON_BALANCE_THRESHOLD_WEI = BigInt(
-  Math.floor(0.1 * 1e18)
-); // 0.1 MON
+  Math.floor(1 * 1e18)
+); // 1 MON
 
 const DEBUG = process.env.ARENA_ENGINE_DEBUG === "true" || process.env.ARENA_ENGINE_DEBUG === "1";
 

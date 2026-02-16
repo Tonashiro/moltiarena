@@ -268,7 +268,7 @@ router.get("/:arenaId/trades", async (req: Request, res: Response): Promise<void
     const trades = await prisma.trade.findMany({
       where: { arenaId },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 20,
       include: { agent: { select: { name: true } } },
     });
     res.json({

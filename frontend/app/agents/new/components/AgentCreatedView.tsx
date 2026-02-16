@@ -3,13 +3,21 @@
 import Link from "next/link";
 import { Check } from "lucide-react";
 import type { ArenaListItem } from "@/app/lib/api";
+import { useSmartAccountMoltiBalance, useMonBalance } from "@/app/lib/contracts/hooks";
+import { formatEther } from "viem";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EXPLORER_URL } from "@/app/lib/contracts/abis";
 import type { CreatedAgent } from "../../types";
 
+/** Epoch renewal fee + gas. Agent must have these before registering to an arena. */
+const MIN_MOLTI_WEI = BigInt("100000000000000000000"); // 100 MOLTI
+const MIN_MON_WEI = BigInt("1000000000000000000"); // 1 MON for gas
+
 interface AgentCreatedViewProps {
   created: CreatedAgent;
+  /** Agent's smart account address for balance checks. Required for registration. */
+  smartAccountAddress: string | null | undefined;
   arenas: ArenaListItem[];
   arenasLoading: boolean;
   registeringArenaId: number | null;
@@ -20,6 +28,7 @@ interface AgentCreatedViewProps {
 
 export function AgentCreatedView({
   created,
+  smartAccountAddress,
   arenas,
   arenasLoading,
   registeringArenaId,
@@ -27,6 +36,20 @@ export function AgentCreatedView({
   registeredArenaIds,
   onRegister,
 }: AgentCreatedViewProps) {
+  const { data: agentMoltiRaw } = useSmartAccountMoltiBalance(smartAccountAddress);
+  const { data: agentMonData } = useMonBalance(smartAccountAddress);
+  const agentMolti = agentMoltiRaw as bigint | undefined;
+  const agentMon = agentMonData?.value;
+
+  const hasSufficientFunding =
+    smartAccountAddress != null &&
+    agentMolti !== undefined &&
+    agentMon !== undefined &&
+    agentMolti >= MIN_MOLTI_WEI &&
+    agentMon >= MIN_MON_WEI;
+
+  const canCheckFunding = smartAccountAddress != null;
+
   return (
     <div className="flex flex-col gap-6">
       <Card>
@@ -63,11 +86,36 @@ export function AgentCreatedView({
         <CardHeader>
           <CardTitle>Register to arenas</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Fund your agent first, then assign it to arenas from the agent
-            detail page.
+            Fund your agent with MOLTI (100+ for epoch renewal) and MON (1+ for gas) before registering.
           </p>
         </CardHeader>
         <CardContent>
+          {!canCheckFunding && (
+            <div className="rounded-md border border-muted bg-muted/30 px-3 py-2 text-sm mb-4">
+              <p className="text-muted-foreground text-xs">
+                Loading agent wallet... Fund your agent with 100+ MOLTI and 1+ MON from the{" "}
+                <Link href={`/agents/${created.agentId}`} className="text-primary hover:underline">
+                  agent page
+                </Link>{" "}
+                before registering.
+              </p>
+            </div>
+          )}
+          {canCheckFunding && !hasSufficientFunding && agentMolti !== undefined && agentMon !== undefined && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm mb-4">
+              <p className="text-amber-700 dark:text-amber-400 font-medium text-xs">
+                Insufficient funding
+              </p>
+              <p className="text-muted-foreground text-xs mt-1">
+                Agent needs 100+ MOLTI and 1+ MON for gas. Current:{" "}
+                {Number(formatEther(agentMolti)).toLocaleString()} MOLTI, {Number(formatEther(agentMon)).toFixed(4)} MON.{" "}
+                <Link href={`/agents/${created.agentId}`} className="text-primary hover:underline">
+                  Fund the agent first
+                </Link>
+                .
+              </p>
+            </div>
+          )}
           {arenasLoading ? (
             <p className="text-muted-foreground text-sm">Loading arenas...</p>
           ) : arenas.length > 0 ? (
@@ -104,14 +152,17 @@ export function AgentCreatedView({
                       disabled={
                         registeringArenaId === arena.id ||
                         isRegistering ||
-                        !arena.onChainId
+                        !arena.onChainId ||
+                        (canCheckFunding && !hasSufficientFunding)
                       }
                     >
                       {registeringArenaId === arena.id
                         ? "Registering..."
                         : !arena.onChainId
                           ? "No chain ID"
-                          : "Register"}
+                          : canCheckFunding && !hasSufficientFunding
+                            ? "Fund first"
+                            : "Register"}
                     </Button>
                   )}
                 </li>

@@ -125,6 +125,7 @@ export default function NewAgentPage() {
     return (
       <AgentCreatedView
         created={form.created}
+        smartAccountAddress={agentData?.smartAccountAddress ?? null}
         arenas={arenas}
         arenasLoading={arenasLoading}
         registeringArenaId={registeringArenaId}

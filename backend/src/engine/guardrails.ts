@@ -70,15 +70,19 @@ export function applyGuardrails(input: GuardrailsInput): TradeDecision {
     return toHold(modelDecision, "guardrail: volume_mon_1h below minimum");
   }
 
+  let ticksSince: number | null = null;
   if (portfolio.lastTradeTick !== null) {
-    const ticksSince = snapshot.tick - portfolio.lastTradeTick;
+    ticksSince = snapshot.tick - portfolio.lastTradeTick;
     // If ticksSince < 0, the tick counter likely reset (e.g. server restart); treat cooldown as satisfied
     if (ticksSince >= 0 && ticksSince < constraints.cooldownTicks) {
       return toHold(modelDecision, "guardrail: cooldown");
     }
   }
 
-  if (portfolio.tradesThisWindow >= constraints.maxTradesPerWindow) {
+  // When tick resets (ticksSince < 0), treat as fresh window and ignore tradesThisWindow
+  const effectiveTradesThisWindow =
+    ticksSince !== null && ticksSince < 0 ? 0 : portfolio.tradesThisWindow;
+  if (effectiveTradesThisWindow >= constraints.maxTradesPerWindow) {
     return toHold(modelDecision, "guardrail: max trades per window");
   }
 

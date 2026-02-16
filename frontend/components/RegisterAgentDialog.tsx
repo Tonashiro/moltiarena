@@ -22,6 +22,82 @@ import { toastError, toastSuccess } from "@/app/lib/toast";
 import type { AgentListItem, ArenaListItem } from "@/app/lib/api";
 import { formatEther } from "viem";
 
+const MIN_MON_FOR_GAS = BigInt("1000000000000000000"); // 1 MON
+const MIN_MOLTI_FOR_RENEWAL = BigInt("100000000000000000000"); // 100 MOLTI
+
+/** Per-agent row with balance check for Mode A (arena page: pick agent to register). */
+function RegisterAgentRow({
+  agent,
+  arena,
+  isLoading,
+  status,
+  registeringId,
+  onRegister,
+}: {
+  agent: AgentListItem;
+  arena: { id: number; name: string | null; onChainId: number | null };
+  isLoading: boolean;
+  status: string;
+  registeringId: number;
+  onRegister: (onChainAgentId: number, onChainArenaId: number, displayLabel: string, dbArenaId: number, dbAgentId: number) => void;
+}) {
+  const addr = agent.smartAccountAddress ?? agent.walletAddress ?? null;
+  const { data: moltiRaw } = useSmartAccountMoltiBalance(addr);
+  const { data: monData } = useMonBalance(addr);
+  const molti = moltiRaw as bigint | undefined;
+  const mon = monData?.value;
+
+  const hasFunding = addr != null && molti !== undefined && mon !== undefined &&
+    molti >= MIN_MOLTI_FOR_RENEWAL && mon >= MIN_MON_FOR_GAS;
+
+  const thisId = (agent.onChainId ?? 0) + (arena.onChainId ?? 0);
+  const isThis = registeringId === thisId && isLoading;
+
+  return (
+    <li className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium truncate">{agent.name}</p>
+        <p className="text-xs text-muted-foreground font-mono">
+          On-chain #{agent.onChainId}
+          {addr != null && !hasFunding && molti !== undefined && mon !== undefined && (
+            <span className="ml-1 text-amber-600 dark:text-amber-400">
+              · Fund first (need 100 MOLTI + 1 MON)
+            </span>
+          )}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        disabled={isLoading || (addr != null && !hasFunding)}
+        onClick={() =>
+          onRegister(
+            agent.onChainId!,
+            arena.onChainId!,
+            arena.name ?? `Arena ${arena.id}`,
+            arena.id,
+            agent.id,
+          )
+        }
+      >
+        {isThis ? (
+          <span className="flex items-center gap-1.5">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+            {status === "approving"
+              ? "Approving..."
+              : status === "writing"
+                ? "Registering..."
+                : "Confirming..."}
+          </span>
+        ) : addr != null && !hasFunding ? (
+          "Fund first"
+        ) : (
+          "Register"
+        )}
+      </Button>
+    </li>
+  );
+}
+
 /* No deposit required for registration — MOLTI is pulled on BUY */
 
 /* ────────────────────────────────────────────────────────────────────
@@ -103,10 +179,8 @@ export function RegisterAgentDialog(props: RegisterDialogProps) {
   const agentMolti = agentMoltiRaw as bigint | undefined;
   const agentMon = agentMonData?.value;
 
-  const MIN_MON_FOR_GAS = BigInt("10000000000000000"); // 0.01 MON minimum for gas
-
   const hasSufficientFunding = props.mode === "arenaForAgent"
-    ? (agentMolti !== undefined && agentMolti > BigInt(0)) &&
+    ? (agentMolti !== undefined && agentMolti >= MIN_MOLTI_FOR_RENEWAL) &&
       (agentMon !== undefined && agentMon >= MIN_MON_FOR_GAS)
     : true; // Mode A: we check per-agent
 
@@ -168,7 +242,9 @@ export function RegisterAgentDialog(props: RegisterDialogProps) {
               : `Join arena with ${props.agent.name}`}
           </DialogTitle>
           <DialogDescription>
-            Select below to assign your agent. The agent will use its funded balance as paper trading capital in each arena.
+            {props.mode === "agentToArena"
+              ? "Select an agent to register. Agents need 100+ MOLTI and 1+ MON (fund from agent page) for epoch renewal to succeed."
+              : "Select below to assign your agent. The agent will use its funded balance as paper trading capital in each arena."}
           </DialogDescription>
         </DialogHeader>
 
@@ -189,50 +265,17 @@ export function RegisterAgentDialog(props: RegisterDialogProps) {
               </div>
             ) : (
               <ul className="divide-y divide-border">
-                {eligibleAgents.map((agent) => {
-                  const thisId =
-                    (agent.onChainId ?? 0) + (props.arena.onChainId ?? 0);
-                  const isThis = registeringId === thisId && isLoading;
-                  return (
-                    <li
-                      key={agent.id}
-                      className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium truncate">{agent.name}</p>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          On-chain #{agent.onChainId}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        disabled={isLoading}
-                        onClick={() =>
-                          handleRegister(
-                            agent.onChainId!,
-                            props.arena.onChainId!,
-                            props.arena.name ?? `Arena ${props.arena.id}`,
-                            props.arena.id,
-                            agent.id,
-                          )
-                        }
-                      >
-                        {isThis ? (
-                          <span className="flex items-center gap-1.5">
-                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
-                            {status === "approving"
-                              ? "Approving..."
-                              : status === "writing"
-                                ? "Registering..."
-                                : "Confirming..."}
-                          </span>
-                        ) : (
-                          "Register"
-                        )}
-                      </Button>
-                    </li>
-                  );
-                })}
+                {eligibleAgents.map((agent) => (
+                  <RegisterAgentRow
+                    key={agent.id}
+                    agent={agent}
+                    arena={props.arena}
+                    isLoading={isLoading}
+                    status={status}
+                    registeringId={registeringId ?? 0}
+                    onRegister={handleRegister}
+                  />
+                ))}
               </ul>
             )}
           </div>
@@ -245,7 +288,7 @@ export function RegisterAgentDialog(props: RegisterDialogProps) {
               Insufficient funding
             </p>
             <p className="text-muted-foreground text-xs mt-1">
-              Agent needs MOLTI {"> 0"} and MON {">="} 0.01 for gas.
+              Agent needs 100+ MOLTI (epoch renewal) and 1+ MON for gas.
               Current: {Number(formatEther(agentMolti)).toLocaleString()} MOLTI, {Number(formatEther(agentMon)).toFixed(4)} MON.
               Fund the agent from its detail page first.
             </p>

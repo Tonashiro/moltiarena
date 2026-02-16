@@ -112,6 +112,14 @@ describe("applyGuardrails", () => {
     expect(r.reason).toContain("max trades");
   });
 
+  it("allows trade when tick reset (ticksSince < 0) even if tradesThisWindow >= maxTradesPerWindow", () => {
+    const r = run({
+      snapshot: { ...baseSnapshot, tick: 2 },
+      portfolio: { ...basePortfolio, tradesThisWindow: 20, lastTradeTick: 150 },
+    });
+    expect(r.action).toBe("BUY");
+  });
+
   it("caps sizePct to maxTradePct", () => {
     const r = run({
       modelDecision: { ...buyDecision, sizePct: 0.5 },
