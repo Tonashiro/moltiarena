@@ -42,6 +42,12 @@ export interface AgentMemoryService {
 /**
  * Creates a memory service. Memory is stored per agent (persona), not per arena.
  * The persona evolves from the agent's actions and results across all arenas.
+ *
+ * Two sources of persona text:
+ * 1. updateMemory (every tick): short rule-based summary from recent trades, capped at 600 chars.
+ *    Shown when the agent has no AI summary yet or before the next summarization run.
+ * 2. summarizeWithAI (periodic, e.g. every 6h, agents with ≥5 trades): rich LLM-generated
+ *    persona (Core identity, What worked/failed, etc.). Capped at PERSONA_MEMORY_MAX_CHARS (default 2500).
  */
 export function createMemoryService(
   prisma: PrismaClient
@@ -269,7 +275,9 @@ Generate a concise persona memory that will help this agent make better decision
           return;
         }
 
-        const truncatedMemory = sanitizeString(rawMemoryText, 1000);
+        // Prompt asks for "max 300 words" (~2000 chars); allow enough room to avoid mid-sentence clipping
+        const maxPersonaChars = Number(process.env.PERSONA_MEMORY_MAX_CHARS) || 2500;
+        const truncatedMemory = sanitizeString(rawMemoryText, maxPersonaChars);
 
         await prisma.agentPersonaMemory.upsert({
           where: { agentId },
