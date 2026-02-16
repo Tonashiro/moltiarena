@@ -3,9 +3,18 @@
 .env.*
 !.env.example
 
+# IDE / AI assistant configs (developer-specific)
+.cursor/
+.claude/
+
 # Contract (moltiarena) - same as contract/.gitignore but scoped
 contract/moltiarena/cache/
 contract/moltiarena/out/
-contract/moltiarena/broadcast/*/31337/
-contract/moltiarena/broadcast/**/dry-run/
 contract/moltiarena/docs/
+
+# Foundry broadcast logs (contain deployer addresses & tx data)
+contract/moltiarena/broadcast/
+
+# OS files
+.DS_Store
+Thumbs.db
