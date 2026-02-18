@@ -147,10 +147,20 @@ async function prepareAgentArenaContext(
   const agentOnChainId = agent.onChainId as number;
   const arenaOnChainId = arena.onChainId as number;
 
-  const [walletMoltiWei, onChainPortfolio] = await Promise.all([
+  const [walletMoltiWei, onChainPortfolio, monBalanceWei] = await Promise.all([
     getMoltiBalance(walletAddress),
     getContractPortfolio(agentOnChainId, arenaOnChainId),
+    getMonBalance(walletAddress),
   ]);
+
+  if (monBalanceWei < MON_BALANCE_THRESHOLD_WEI) {
+    if (DEBUG) {
+      console.log(
+        `[arenaEngine] agent ${agent.id} (${agent.name}) arena ${arena.id}: MON balance below threshold (${formatEther(monBalanceWei)} < ${formatEther(MON_BALANCE_THRESHOLD_WEI)}), skip AI`,
+      );
+    }
+    return null;
+  }
 
   const cashMon = Number(formatEther(walletMoltiWei));
   const tokenUnits = Number(formatEther(onChainPortfolio.tokenUnits));
